@@ -7,3 +7,4 @@ __pycache__/
 *.safetensors
 data/
 exam_text/
+.venv/

@@ -1,0 +1,7 @@
+# Present on Kaggle's image already; listed so a rented A100 or a fresh venv matches.
+# Adding a line here is a lead decision (AGENTS.md).
+torch>=2.0
+numpy>=1.24
+tokenizers>=0.15
+matplotlib>=3.7
+pytest>=7.4

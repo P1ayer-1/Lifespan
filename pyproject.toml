@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lifespan"
+version = "0.1.0"
+description = "Continual-learning experiment: sleep consolidation vs replay across seven developmental phases"
+requires-python = ">=3.10"
+# Kaggle's image pins torch; nothing here may be added without the lead's decision
+# (AGENTS.md, "Only the lead adds a dependency"). Versions are floors, not pins,
+# so the Kaggle image satisfies them without a reinstall.
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "tokenizers>=0.15",
+]
+
+[project.optional-dependencies]
+report = ["matplotlib>=3.7"]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["training*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
