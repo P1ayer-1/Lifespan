@@ -503,3 +503,39 @@ Decisions (owner, 2026-09-23):
   passing in the repo.
 - `OPEN_ROUTER_API_KEY` joins `ANTHROPIC_API_KEY` in the environment rule
   in CLAUDE.md; `.env` is git-ignored and was checked to be.
+
+## 2026-09-23 (night) — generator configuration rebuilt
+
+Measurement (`curriculum-learning/tools/config_audit.py`, run before the
+rewrite): at grades 9-12 the only basic-learning arc was "learning to code"
+and it carried 30-50% of the draw; ten tiers shared one placeholder weight
+row; all 20 arc goals were "more complex X" placeholders; exposures for
+grades 3-12 numbered three per tier; tones were ten early-childhood
+registers with no tier gating; a feature asked for a stated moral that the
+template forbids; locations included "at the kitchen" and "online". 66
+problems in all.
+
+Decision (owner: "a lot of config data is placeholder or incomplete"):
+- Schema: an arc's `basic_learning` / `advanced_learning` is now a LIST of
+  grade-band levels (`{min_tier, max_tier, goal}`), so one subject carries a
+  concrete goal per band; tones take `min_tier` / `max_tier`; the old
+  nested shape still loads. Tier weights set per band (exposure-heavy in
+  kindergarten, learning-heavy from grade 3, advanced share rising to 25%
+  by grade 11-12); age ranges tightened to two years around the grade norm.
+- Content, authored by four subagents against explicit coverage rules:
+  24 arcs / 149 basic and 135 advanced levels (math, reading, writing,
+  science, physics, chemistry, biology, earth and space, history, geography,
+  civics, economics and money, second language, music, art, drama and
+  speaking, sports, health, cooking, coding, technology tools, practical
+  life, religious and cultural practice, social skills); 48 experiences;
+  65 exposures; 18 tones (wry, suspenseful, reflective, tense, bittersweet,
+  matter-of-fact, earnest, hopeful added for older tiers); 21 gated craft
+  features with the moral one removed.
+- After: every tier has 12-19 exposures, 15-33 experiences, 13-23 basic and
+  0-23 advanced arcs, at least 12 tones and 7 features; the audit reports 0
+  problems and `tests/test_config_coverage.py` (9 tests) enforces the
+  minimums, unique non-placeholder goals, prepositional locations,
+  contiguous arc bands and a full generator run at every tier.
+- Every prompt hash changes with this; nothing had been generated, so
+  nothing is invalidated. Fact-domain matching gained a keyword fallback for
+  the ~90 new content keys.
