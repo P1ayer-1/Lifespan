@@ -67,9 +67,14 @@ training script can read. Only their hashes are committed (`exams/manifest.json`
 - **Windows-native dev machine.** Python paths and scripts must run on native
   Windows (not WSL) as well as on Kaggle's Linux. No shell scripts; Python entry
   points only.
-- **No secrets in the repo.** Generation-model credentials (2026-09-21: moving
-  off Gemini, probably to Claude; `ANTHROPIC_API_KEY`) and Kaggle credentials
-  come from the environment. The generation scripts must never print or log them.
+- **No secrets in the repo.** Generation-model credentials (`OPEN_ROUTER_API_KEY`
+  for the GLM 5.3 corpus generator since 2026-09-23; `ANTHROPIC_API_KEY` for the
+  Claude fallback) and Kaggle credentials come from the environment (`.env` is
+  git-ignored). The generation scripts must never print or log them.
+- **LLM labor runs as subagents, not API calls** (owner, 2026-09-23): judging
+  stories, writing fact banks and lexicons, fact-checking and audits are done by
+  Claude Code subagents on the Max plan. API credit is spent only on the corpus
+  generator itself.
 - **Decisions go in `docs/DECISIONS.md`**, dated, with the measurement that drove
   them, in the style of `D:\Reflex\REFLEX_PLAN.md`: measure, then decide, then
   record both.

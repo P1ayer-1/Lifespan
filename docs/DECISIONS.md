@@ -479,3 +479,27 @@ Decisions (owner, 2026-09-23):
   before the exam freeze, on train and exam stories alike.
 - The 2026-09-22 Haiku decision is superseded; `generate_responses.py`'s
   default model changes with the OpenRouter provider (next entry).
+
+## 2026-09-23 (night) — OpenRouter provider in the pipeline
+
+- `response/openrouter_provider.py` presents OpenRouter's chat endpoint to
+  `generate_responses.py` as a batch provider: requests run on a thread
+  pool, every finished story lands in `<out>.openrouter_cache.jsonl` as it
+  arrives, and batch membership is persisted there too, so a killed run
+  resumes without re-requesting anything paid for. Upstream is pinned
+  (`provider.order=[Baidu]`, fallbacks off); a story served by any other
+  upstream, a truncated story, or an empty one is a retryable failure.
+  Reasoning effort low, excluded from the response, 1,500 tokens of
+  max_tokens headroom for it. The model string recorded on every story line
+  and checked by the one-model rule is
+  `z-ai/glm-5.3@openrouter/Baidu/fp8/reasoning=low`.
+- `generate_responses.py --provider openrouter` is the default;
+  `--provider anthropic` keeps the Claude Message Batches path with
+  `claude-haiku-4-5`. Dry-run prices per provider; assumed output 700
+  tokens a story for GLM (measured 690-720), 550 for Haiku.
+- Measured on the real prompt set (34,996 train prompts, seed 42): dry-run
+  estimate $58 for train on GLM/Baidu, so ~$64 with the 3,500 exam stories;
+  Haiku through the Batch API would be $61 + $6. Six new provider tests, 41
+  passing in the repo.
+- `OPEN_ROUTER_API_KEY` joins `ANTHROPIC_API_KEY` in the environment rule
+  in CLAUDE.md; `.env` is git-ignored and was checked to be.
