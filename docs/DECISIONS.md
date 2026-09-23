@@ -438,3 +438,44 @@ cost estimate stands.
 
 Rule applied throughout: story generation on the API (rounds 3-5 cost
 $0.24 in total), judging and data building by subagents on the Max plan.
+
+## 2026-09-23 (night) — generator: GLM 5.3 (Baidu, fp8) replaces Haiku 4.5
+
+Measurement: 42 identical prompts per generator (seeds 6 and 7, 3 per phase),
+stories shuffled under opaque ids and split between two blind subagent
+judges so neither judge knew which generator wrote what
+(`tools/prompt_lab/mix_blind.py`, runs r7*). Same rubric as rounds 1-6.
+
+| Generator | Band exact | Within 1 | Level fit | Edu value | Coherence | Natural | Lecture-like | Words misused | False statements | Tokens out/story |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Haiku 4.5 | 30/42 | 42/42 | 4.10 | 3.07 | 3.36 | 2.90 | 9 | 15 | 12 | 566 |
+| GLM 5.3, Baidu fp8, low reasoning | 27/42 | 41/42 | 4.52 | 3.69 | 3.98 | 4.00 | 1 | 3 | 7 | 704 (incl. ~80 reasoning) |
+
+GLM is better on every quality measure except a three-story deficit in
+exact band placement (both are at or near perfect within one band). The
+gap is largest where it matters most, phases 3-6: naturalness 4.42 vs 3.00,
+coherence 4.25 vs 3.33, misused words 3 vs 13. A 14-story pilot of Sonnet 5
+(run r6_sonnet) scored like GLM on coherence and naturalness but not on
+false statements (3/14) at three times GLM's cost, so it was not carried
+into the head-to-head.
+
+Cost at the standard OpenRouter Baidu endpoint ($0.56 in / $1.76 out per
+MTok, no batch discount available): ~$62 for the 38,500-story corpus
+versus ~$66 for Haiku through the Anthropic Batch API. The `:batch`
+listing at $0.45/$2.00 is an fp4 quantization and is not used.
+
+Decisions (owner, 2026-09-23):
+- The corpus generator is `z-ai/glm-5.3` through OpenRouter, upstream
+  pinned to Baidu (fp8), fallbacks disabled, reasoning effort low and
+  excluded from the response. Reasoning cannot be disabled for this model on
+  any of the eight OpenRouter providers probed; low effort costs ~80 output
+  tokens a story. The recorded model string in every story line carries the
+  upstream and quantization so a routing change cannot pass unnoticed.
+- False statements are a generator-independent ~15-30% (they are the
+  model's own added mechanisms, arithmetic and analogies, never the injected
+  fact), so the corpus gets a fact-consistency gate run by subagents on the
+  Max plan (`tools/prompt_lab/fact_check_export.py`): every story is checked
+  against its fact, failures are queued for regeneration. This gate runs
+  before the exam freeze, on train and exam stories alike.
+- The 2026-09-22 Haiku decision is superseded; `generate_responses.py`'s
+  default model changes with the OpenRouter provider (next entry).
