@@ -24,7 +24,7 @@ phase at tiny scale.
 
 | Path | Role here | Touch it? |
 | --- | --- | --- |
-| `D:\Tiny Models\curriculum-learning` (package `lifespan_learning`) | Generates the training prompts; owns the phases/tiers/arcs/tones config; needs the exam side added (checklist in `PLAN.md`) | Yes — the repo-change checklist targets it. Keep data generation there; keep training code here. |
+| `D:\Lifespan\curriculum-learning` (package `lifespan_learning`) | Generates the training prompts; owns the phases/tiers/arcs/tones config; needs the exam side added (checklist in `PLAN.md`) | Yes — the repo-change checklist targets it. Keep data generation there; keep training code here. Moved beside this repo on 2026-09-23. |
 | `D:\Reflex` | Dispatch/classifier layer for agent harnesses. Reuse: the bench harness's statistics discipline (seeds, MDE, t-test), the rules-as-labelling-oracle pattern, the Laya probe | Read-only from this project |
 | `D:\WORK` (Holdout Labs) | Verified evaluation platform. Its rules apply to our own results: a score counts only when reproduced from a named commit on held-out data | Read-only from this project |
 

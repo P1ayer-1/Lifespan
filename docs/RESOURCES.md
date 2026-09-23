@@ -106,7 +106,7 @@ the destination — the exam sets plus evaluation code become a continual-learni
 bounty type whose metric (average forgetting on held-out phases, reproduced from
 commit) is code.
 
-### `D:\Tiny Models\curriculum-learning` — package `lifespan_learning`
+### `D:\Lifespan\curriculum-learning` — package `lifespan_learning`
 
 A prompt generator for a developmental curriculum. Seven neo-Piagetian phases
 (`config/phases.yaml`: Emergent Symbolic Thought → Stable Rule-Based Reasoning →

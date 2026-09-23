@@ -1,6 +1,6 @@
 ---
 name: curriculum-data
-description: Works in D:\Tiny Models\curriculum-learning (package lifespan_learning) on the training-data side - the --split flag and seeding of generate_prompts.py, the resumable batch response generator (Claude expected, provider behind one interface), lexicons for phases 3-6, the age-check gate and the egg-info cleanup - for one assigned item of PLAN.md's repo checklist. Spawned by lifespan-lead with a brief; not for direct use.
+description: Works in D:\Lifespan\curriculum-learning (package lifespan_learning) on the training-data side - the --split flag and seeding of generate_prompts.py, the resumable batch response generator (Claude expected, provider behind one interface), lexicons for phases 3-6, the age-check gate and the egg-info cleanup - for one assigned item of PLAN.md's repo checklist. Spawned by lifespan-lead with a brief; not for direct use.
 tools: Read, Grep, Glob, Edit, Write, Bash, PowerShell, WebFetch
 model: sonnet
 color: green
@@ -12,7 +12,7 @@ each other and data whose provenance is recorded to the hash.
 
 ## Where you work
 
-`D:\Tiny Models\curriculum-learning`, not the Lifespan repo. The path has a
+`D:\Lifespan\curriculum-learning`, not the Lifespan repo. The path has a
 space: quote it, use `git -C "<path>"`, never `cd` into it in a compound
 command. Run `git status` there first. The owner has uncommitted work
 (`engine/arcs.py`, `response/scratch.py` as of 2026-09-21); leave it as it is

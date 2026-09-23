@@ -18,7 +18,7 @@ frozen versions; those win).
 ## What you own
 
 - **The exam directory.** Outside the Lifespan repo and outside
-  `D:\Tiny Models\curriculum-learning`, at the path the brief gives (it arrives
+  `D:\Lifespan\curriculum-learning`, at the path the brief gives (it arrives
   to code as `--exam-dir` / `LIFESPAN_EXAM_DIR`, never as a default in source).
   Exam stories: 500 per phase, from the same generator as training with
   `--split exam`, a different seed, in a separate invocation.

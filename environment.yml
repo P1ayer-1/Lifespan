@@ -1,0 +1,19 @@
+# One micromamba env for both repos (Lifespan and the sibling curriculum-learning).
+#   micromamba create -f environment.yml
+#   micromamba run -n lifespan python -m pytest
+# Torch is CPU-only on purpose (docs/DECISIONS.md, 2026-09-21): smoke tests
+# possible, laptop training impossible. Dependencies stay in the two
+# requirements.txt files; this file only names the interpreter and installs them.
+name: lifespan
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - pip:
+      - --index-url https://download.pytorch.org/whl/cpu
+      - --extra-index-url https://pypi.org/simple
+      - -r requirements.txt
+      - -r ../curriculum-learning/requirements.txt
+      - -e .
+      - -e ../curriculum-learning

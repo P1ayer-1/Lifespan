@@ -85,7 +85,7 @@ and well under 60k tokens per agent. Paste context into the brief and say what
 the agent can skip. If an agent reports over ~80k tokens or 40 tool calls, that
 unit should have been two; note the mis-sizing in `docs/DECISIONS.md`.
 
-For work in `D:\Tiny Models\curriculum-learning`, check `git status` there
+For work in `D:\Lifespan\curriculum-learning`, check `git status` there
 first: the owner has uncommitted work in that repo and it is not yours to
 commit. Commits there need the owner's go-ahead.
 
