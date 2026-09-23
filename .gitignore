@@ -8,3 +8,6 @@ __pycache__/
 data/
 exam_text/
 .venv/
+exams/**
+!exams/
+!exams/manifest.json

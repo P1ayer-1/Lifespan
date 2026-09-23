@@ -19,9 +19,21 @@ rule applied to ourselves).
 | Hypothesis | Confirmed if | Killed if |
 | --- | --- | --- |
 | H1 Forgetting is real at this scale | Arm A (sequential, no replay) loses >= 15% of its peak phase-0 exam score by the end of phase 6 | Arm A loses < 5%: the phases are too similar or the exams too easy to test anything; fix the curriculum first |
-| H2 Consolidation beats plain replay | Arm D's average forgetting <= Arm B's, and final average accuracy within 3 points of Arm E (joint oracle), at <= 1.5x Arm B's GPU time | Arm D forgets more than Arm B, or costs > 2x for equal forgetting |
+| H2a Consolidation beats plain replay on retention | Arm D's average forgetting <= Arm B's, and final average accuracy within 3 points of Arm E (joint oracle) | Arm D forgets more than Arm B |
+| H2b What that retention costs | Not a pass/fail test. The measured GPU-time ratio of Arm D to Arm B, reported against the <= 1.5x and > 2x bands the original H2 named | -- |
 | H3 Distillation is needed, merging is not enough | Arm D beats Arm C (arithmetic merge) by >= 5 points average accuracy | Arm C matches Arm D: reverse-LoRA is just W += BA and the distillation step is dropped |
 | H4 Replay is the active ingredient | Arm D without replay forgets clearly more than Arm D with replay | No difference: the consolidation alone preserves old phases, which would be a surprising and publishable result on its own |
+
+H2 was one hypothesis until 2026-09-22, joining retention to a compute ceiling of
+1.5x Arm B. It was split before any run, on the owner's decision, because the two
+clauses could not both be satisfied by the algorithm this plan specifies: the
+consolidation step is a 1-unit LoRA day plus a night of two frozen teacher
+forwards and a student step, which the *Budget* paragraph below already puts at
+2.5-3x Arm A, and Arm B measures 1.375x Arm A -- so Arm D is 1.8-2.2x Arm B by
+construction, and no implementation reaches 1.5x. Splitting keeps the retention
+claim falsifiable on its own evidence and turns the cost into what it always
+was, a measured number. The bands are unchanged and H2b is reported against
+them. See docs/DECISIONS.md, 2026-09-22.
 
 Every comparison uses 3 seeds and reports mean and standard deviation. A
 difference smaller than the seed spread is reported as no difference; Reflex's

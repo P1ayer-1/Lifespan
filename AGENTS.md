@@ -40,7 +40,7 @@ One owner per file at a time. Anything not listed belongs to `lifespan-lead`.
 | Agent | Owns | Never touches |
 | --- | --- | --- |
 | `lifespan-lead` | `PLAN.md`, `CLAUDE.md`, `AGENTS.md`, `docs/`, `pyproject.toml` / requirements, commits, spend gates, the H1–H4 verdicts | — |
-| `curriculum-data` | In `D:\Tiny Models\curriculum-learning`: `generate_prompts.py` and the `--split` flag, the batch response generator, lexicons for phases 3–6, the age-check gate, the egg-info cleanup | exam output directories; this repo's `training/` |
+| `curriculum-data` | In `D:\Lifespan\curriculum-learning`: `generate_prompts.py` and the `--split` flag, the batch response generator, lexicons for phases 3–6, the age-check gate, the egg-info cleanup | exam output directories; this repo's `training/` |
 | `exam-keeper` | The exam directory (outside both repos), the probe builder, the near-duplicate check, `exams/manifest.json`, the replay-buffer selection file | training code; regenerating anything after the freeze |
 | `trainer-core` | `training/tokenizer.py`, `model.py`, `data.py`, `train.py`, `checkpoint.py`, `guard.py`, `runrecord.py` and their tests | `lora.py`, `consolidate.py`, `evaluate.py`; the exam directory |
 | `consolidation` | `training/lora.py`, `training/consolidate.py` and their tests | the training loop's control flow beyond the agreed hook; the exam directory |
@@ -149,6 +149,111 @@ commit.txt    commit sha, dirty flag (a dirty tree is not a result), torch/CUDA/
 `untrained` is in the matrix file because forward transfer (PLAN.md,
 Evaluation) is measured against it and it cannot be recovered afterwards.
 
+### Amendments — frozen 2026-09-22, announced to every holder
+
+Wave 2 and 3 came back with four places where the frozen text was wrong or
+silent. Fixed here, before any run, and recorded in `docs/DECISIONS.md`.
+
+```text
+# CORRECTION — after_phase does NOT run at phase 0, and it OWNS the phase
+after_phase(model, phase_k, ctx) -> model        # phases 1..6 only
+# The 2026-09-21 text said "including phase 0 for arms C, D, D-nr". That was
+# wrong: phase 0 is ordinary full training shared by A, B, C, D and D-nr, and
+# PLAN.md gives C and D "one LoRA per phase 1-6". No hook runs at phase 0.
+# For an arm with uses_lora, train.py MUST NOT run its ordinary base phase loop:
+# the day (training the LoRA on phase k) happens inside the hook. Running both
+# doubles the arm's token budget and leaves arm C's base unfrozen, which is the
+# opposite of what arm C is for.
+
+# PhaseContext gains one field
+sequences_per_batch: int   # N. Hooks use this, never a TrainConfig default.
+
+# Loaders yield contiguous full blocks of block_size tokens. Never padded, so
+# there is no pad or ignore id and every position carries a prediction.
+
+# Timing buckets — these three keys, and ctx.timer takes the key itself
+"train_s" | "consolidate_s" | "eval_s"
+
+# Replay buffer path
+<train-dir>/replay/phase_{k}.json          # --replay-dir overrides
+
+# evaluate_all gains a keyword-only parameter
+evaluate_all(model, exam_dir, phases, *, tokenizer=None, cfg=None)
+# The 3-positional frozen call still works. train.py MUST pass the run's real
+# tokenizer; without it every score is byte-level and means nothing.
+
+# matrix.json gains a fourth key, stored and never headlined
+{untrained: {exam_type: [7]}, M: {exam_type: [[7]x7]}}
+#   exam_type in ("perplexity", "cloze", "continuation", "continuation_summed")
+
+# commit.txt — one "key: value" per line, and `dirty` is mandatory
+commit: <40-hex sha>
+dirty: true|false
+torch: <version>
+cuda: <version or "none">
+driver: <version or "none">
+# A run whose dirty flag is missing or unparseable is EXCLUDED from a report and
+# named as excluded. It is never assumed clean: that is the one default that
+# would let a dirty tree become a result.
+
+# config.json — hashes live under one top-level key
+"hashes": {"manifest": ..., "train_files": {...}, "config": ...}
+```
+
+Also corrected 2026-09-22: `REAL` is **29,901,824** parameters (25,183,232
+non-embedding + 4,718,592 embedding), not the 29,884,416 first frozen. The first
+count omitted the affine LayerNorm vectors. The fix is to the arithmetic;
+LayerNorm stays affine and linear layers stay bias-free.
+
+### Amendment 2 — frozen 2026-09-22, from the leakage audit
+
+Two blocking findings. Both are failures that leave no trace in any artefact, so
+both are closed by an assertion rather than by a convention.
+
+```text
+# Generation-model provenance — the confound the forgetting curve cannot separate
+# from forgetting (AGENTS.md, "The story generator is not Gemini").
+# The generator's model check compared a run's model id only against lines already
+# in the SAME --out file. Each phase is its own file, so a model change BETWEEN
+# phases was caught by nothing, and the run record had no field for it at all
+# (config.json's "model" key is the architecture config, not the generator).
+#
+# curriculum-learning: the model check is over the WHOLE corpus directory, not one
+#   file. A model id that differs from any other file's in that directory is a
+#   hard exit. The message must not suggest working around it with a new --out.
+# training/runrecord.py: config.json carries a top-level "generator_model", read
+#   from the training lines themselves and asserted single-valued across every
+#   phase file. A corpus with two generator model ids does not train.
+
+# Continuation-probe provenance — unverifiable after the freeze unless recorded now
+# `distractor_phases` is written by the contract and read by nothing, and it CANNOT
+# be reconstructed later: a manifest entry hashes a whole exam file, while an option
+# is a paragraph excerpted from one, so its sha256 never matches a manifest hash. A
+# distractor accidentally drawn from a training story would be permanently
+# undetectable and would inflate the headline metric on exactly the phases the arms
+# are meant to forget.
+#
+# exam-keeper MUST, before the freeze, write into every continuation probe line:
+continuation: {id, phase, prefix, options: [4 paragraphs], answer_index,
+               distractor_phases: [3],
+               option_sources: [{story_id, story_sha256, phase} x4]}   # NEW, required
+#   and assert at manifest time that every option's source story hash is a member
+#   of the exam manifest and of no training file, that no distractor shares the
+#   item's own phase or its own story id, and that distractor_phases is non-empty.
+# training/evaluate.py asserts option_sources at load: 4 entries, the answer's
+#   source phase equal to the item's phase, the other three neither that phase nor
+#   that story id. After the freeze nothing else can check it.
+
+# Continuation scoring, two asymmetries with cloze (which IS validated)
+#   - `answer_index` is not bounds-checked. Bounds-check it.
+#   - CONTINUATION_CHANCE is hardcoded 1/4 regardless of len(options), so a
+#     5-option item would silently report chance 0.25. Derive it from len(options).
+
+# .gitignore now carries `exams/**` with `!exams/manifest.json`, so committing exam
+# text is refused by git rather than merely discouraged. (Exams live outside the
+# repo by design; this makes the wrong `git add` impossible, not just unlikely.)
+```
+
 ## Waves
 
 Follow `PLAN.md`'s schedule; a wave is green when its gate is answered in
@@ -163,8 +268,8 @@ writing in `docs/DECISIONS.md` with the measurement.
 
 ## Working across two repos
 
-`D:\Tiny Models\curriculum-learning` has a space in its path: quote it, and use
-`git -C "<path>"` rather than `cd`. It had uncommitted work on 2026-09-21
+`D:\Lifespan\curriculum-learning` sits beside this repo (moved from
+`D:\Tiny Models` on 2026-09-23); use `git -C "<path>"` rather than `cd`. It had uncommitted work on 2026-09-21
 (`engine/arcs.py` modified, `response/scratch.py` staged); check `git status`
 there before editing and do not fold the owner's changes into yours. `D:\Reflex`
 and `D:\WORK` are read-only from here.

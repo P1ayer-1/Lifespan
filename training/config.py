@@ -29,16 +29,24 @@ class ModelConfig:
     dropout: float = 0.0
 
     def n_params(self) -> tuple[int, int]:
-        """(non-embedding, embedding) parameter counts, tied output head."""
+        """(non-embedding, embedding) parameter counts, tied output head.
+
+        Linear layers carry no bias (nanoGPT's convention, and one fewer thing
+        for LoRA to miss). LayerNorm is affine: two vectors per norm, two norms
+        per block plus the final one. Corrected 2026-09-22 - the first count
+        omitted them, and the fix is to the arithmetic, not to the model.
+        """
         per_layer = 4 * self.n_embd**2 + 2 * self.n_embd * 4 * self.n_embd
-        non_emb = self.n_layer * per_layer
+        norms = (2 * self.n_layer + 1) * 2 * self.n_embd
+        non_emb = self.n_layer * per_layer + norms
         emb = self.vocab_size * self.n_embd + self.block_size * self.n_embd
         return non_emb, emb
 
 
 #: PLAN.md: 8 layers, 512 hidden, 8 heads, 1,024-token context. vocab 8,192 is
 #: the bottom of PLAN.md's 8k-16k band and lands the total at ~30M:
-#: 25.2M non-embedding + 4.7M embedding. A 16k vocab would make it ~34M.
+#: 25,183,232 non-embedding + 4,718,592 embedding = 29,901,824. A 16k vocab
+#: would make it ~34M and put a seventh of the model in the embedding table.
 REAL = ModelConfig(n_layer=8, n_head=8, n_embd=512, block_size=1024, vocab_size=8192)
 
 #: CPU smoke tests only (AGENTS.md: toy config, <=1M parameters, <=50 steps).
@@ -103,9 +111,35 @@ PILOT_OVERRIDES: dict[str, int] = {
 }
 
 
+def warmup_for(steps_per_phase: int, base_warmup: int = 200, *, scaled: bool = False) -> int:
+    """Warmup steps. The grid gets PLAN.md's fixed 200 and nothing else.
+
+    `scaled=True` is passed ONLY by a --pilot or --toy run. Those phases are
+    shorter than 200 steps (pilot: 74, toy: <=50), so at the fixed warmup they
+    would never leave the linear ramp and would report a peak lr they never
+    reached, which would make the pilot a bad instrument for finding the bugs it
+    exists to find. Warmup is counted in steps, and steps is a size, so scaling
+    it at pilot sizes is inside what --pilot may change (decided 2026-09-22). A
+    grid run never passes `scaled` and its warmup is exactly 200.
+
+    Note for the owner, not acted on: a grid phase is 367 steps, so the fixed
+    200 is 54% of the phase. PLAN.md fixes it and the plan is frozen; changing
+    it is a decision to make before the grid, never after a matrix comes back.
+    """
+    if not scaled:
+        return base_warmup
+    return min(base_warmup, max(1, steps_per_phase // 10))
+
+
 @dataclass(frozen=True)
 class ToyOverrides:
-    """The sizes a CPU smoke test runs at; the model is `TOY`."""
+    """The sizes a CPU smoke test runs at; the model is `TOY`.
+
+    Frozen in AGENTS.md as `training.config.TOY_RUN`, which is where three
+    agents' tests look for it. It briefly lived in `train.py` after the lead
+    truncated this file on 2026-09-22; restored here, and `train.py` re-exports
+    the name so existing imports keep working.
+    """
 
     stories_per_phase: int = 20
     exam_items_per_phase: int = 4
