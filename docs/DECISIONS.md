@@ -382,3 +382,34 @@ phase, 21 stories per variant per round; small n, so only large effects count.
   builds; owner refilled $20 and ruled that LLM labor (judging, fact and lexicon
   building, verification) runs as Claude Code subagents on the Max plan, not
   through the API; API credit is for the production Haiku generator only.
+
+## 2026-09-23 (later) — fact bank and lexicons installed; round 3; two bugs
+
+- **Fact bank and graded lexicons are in `config/facts/` and `config/lexicons/`**,
+  built by subagents (one writer and one independent fact-checker per phase):
+  682 of 720 facts kept (verdicts per phase in `tools/prompt_lab/facts/_verify`);
+  376-620 words per phase, at most 7 shared between any two phases.
+- **Round 3 (seed 3, 21 stories per variant, subagent judges):** the repo
+  template with the injected fact vs the same template naming only a domain.
+  Blind band guess exact 17/21 vs 12/21, within one band 21/21 vs 20/21;
+  educational value 3.14 vs 3.05; coherence 3.38 vs 3.24; naturalness 2.71 vs
+  2.67; lecture-like 3 vs 0; one "#" title slipped through (the pipeline's
+  `clean_story` removes it). The fact-injected template stays. Two judges
+  (one per variant), so cross-variant differences carry judge variance.
+- Judges' recurring complaints, both variants: the harder graded-lexicon words
+  are sometimes misused ("the mesmerize quality", "excavate the problem"), and
+  Haiku occasionally garbles an injected number or direction (a Titanic
+  lifeboat count, "shorter in the morning"). Template now says to keep every
+  number, direction and comparison exactly as given, and to leave a target
+  word out rather than misuse it. Not yet re-measured.
+- **Bug found in the old generator: `AdvancedLearningArc` had no `build_prompt`,
+  so every advanced_learning prompt (10% weight in tiers 2-13) rendered the
+  base-class placeholder ("Generate a <Tone object> story about ...").** No
+  test covered it and nothing crashed. The shared template fixes it because
+  `Arc.build_prompt` now serves both arc kinds; `test_every_prompt_uses_the_shared_template`
+  covers it.
+- **Harness bug (rounds 1-3):** `gen_ab.py` hooked only `BasicLearningArc`, so
+  within a phase every row after an advanced_learning draw had its metadata
+  (age, grade, target words) shifted by one; phase ids were right, so the
+  band-guess numbers stand, but per-story age fit for those rows was judged
+  against a neighbour's age. Fixed by hooking `Arc`.
