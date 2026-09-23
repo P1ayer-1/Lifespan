@@ -413,3 +413,28 @@ phase, 21 stories per variant per round; small n, so only large effects count.
   (age, grade, target words) shifted by one; phase ids were right, so the
   band-guess numbers stand, but per-story age fit for those rows was judged
   against a neighbour's age. Fixed by hooking `Arc`.
+
+## 2026-09-23 (evening) — template frozen after rounds 4 and 5
+
+Both rounds: 14 stories (2 per phase), the repo template with injected facts
+and the new lexicons, one subagent judge each, blind band guess first.
+
+| Round | Change measured | Band exact | Level fit | Edu value | Coherence | Natural | Words misused | False statements |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 3 (n=21) | facts injected | 17/21 | 3.86 | 3.14 | 3.38 | 2.71 | many | 2 |
+| 4 | exact-number rule, correct-or-omit words | 14/14 | 4.57 | 3.64 | 3.36 | 2.64 | 8/14 | 3 |
+| 5 | no explaining beyond the fact; words only where they fit | 14/14 | 4.50 | 3.64 | 3.07 | 3.07 | 4/14 | 2 |
+
+Decision: the round-5 wording is the template for the corpus. The blind band
+guess is now exact for every story in two consecutive rounds (the old
+template managed 8/21), which is the property H1-H4 depend on. Open and
+accepted: Haiku still adds a wrong mechanism or number of its own in roughly
+2 of 14 stories (the injected facts themselves were correct in every flagged
+case), and about a quarter of stories misuse one of the harder lexicon
+words. Both are generator limits, not template limits; the age-check gate
+and, if wanted later, a fact-consistency pass over the corpus are the place
+to catch them. Output length is ~545-590 tokens per story, so the corpus
+cost estimate stands.
+
+Rule applied throughout: story generation on the API (rounds 3-5 cost
+$0.24 in total), judging and data building by subagents on the Max plan.
