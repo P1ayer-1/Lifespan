@@ -539,3 +539,110 @@ Decision (owner: "a lot of config data is placeholder or incomplete"):
 - Every prompt hash changes with this; nothing had been generated, so
   nothing is invalidated. Fact-domain matching gained a keyword fallback for
   the ~90 new content keys.
+
+## 2026-09-25 — pre-pilot approved: phases 0, 3 and 6, arms A and E
+
+Measurement: tier-0 stories average 171 words (~230 tokens) against the ~600
+PLAN.md assumed, so a 1,000-story pilot phase 0 is under 1M token-passes.
+GLM story length rises steeply with tier (prompt_lab runs: 474 words at
+phase 3, 842 at phase 6), so 1,000 stories per phase is ~0.23M tokens at
+phase 0 and ~1.1M at phase 6.
+
+Decisions (owner, 2026-09-25):
+- A pre-pilot runs before PLAN.md's week-2 pilot. It is a sanity check and
+  never an H1 verdict: does a 30M model learn phase 0 at pilot data size, and
+  do the exams separate phases? Phases 0, 3, 6; arms phase0 -> A, and E;
+  1,000 training stories per phase (phase 0 = the 995 accepted tier-0
+  stories); 100 exam stories per phase; Kaggle free quota on the owner's go.
+- Its exams are a throwaway experiment: own experiment_id, seed 4243, own
+  manifest, never reused by the pilot or the grid, so the real exam seed and
+  freeze stay unseen. Phase-0 exams are tier 0 only, because the phase-0
+  training corpus is tier 0 only (phase 0 spans tiers 0-1).
+- Generation cap $10 on OpenRouter (raised from $4 after the lead's estimate
+  of ~$5 at list rates for 2,200 phase 3/6 stories, 300 exam stories and
+  regeneration). Stop at the cap.
+- Quality gate: every exam story through both Opus reviewers; a seeded
+  200-story sample of the phase 3 and phase 6 training stories through both;
+  failures regenerated as for tier 0 (separate --out per round). The review
+  wave runs from a session started in D:\Lifespan, where the reviewers live.
+- Audit re-runs 1 and 2 launched from the D:\Lifespan session on 2026-09-25
+  did not finish (that session exited while they ran; they were
+  general-purpose agents acting from lifespan-auditor.md, not the auditor
+  itself). No findings exist from them. Both re-run with the real
+  lifespan-auditor from this repo's session, same day.
+- **Phases 3 and 6 get per-activity fact banks before any story is
+  generated** (owner, 2026-09-25). Measurement (curriculum-learning ce15c91,
+  pre-pilot train prompts, seed 42): an injected verified fact reaches 17 of
+  1,000 phase-3 prompts and 59 of 1,000 phase-6 prompts, against 1,000 of
+  1,000 at phase 0, because the phase-level bank matches only on a >= 3-term
+  overlap. The rest fall back to domain-only, the mode measured on
+  2026-09-23 at ~15-30% false statements. Generating now would have mixed two
+  recipes across phases and measured a recipe the pilot would not keep. Same
+  build as phase 0 (commit ad97bc6): per-activity lists, Opus writer
+  subagents at 12 facts per activity, independent Opus reviewers, only
+  "true" ships; spec adapted to grades 6-8 and grade 12. Costs no API credit.
+- Dry-run cost for the pre-pilot at measured story lengths (tier 0's 1.46
+  output tokens per word): phase 3 $1.59, phase 6 $2.57, 300 exam stories
+  $0.51, one regeneration round ~$0.17; ~$4.84 at list rates. The
+  generator's flat 700-token assumption undercounts phase 6 by ~43%.
+- Phase 3 and 6 generation runs pass `--corpus-registry` pointing at
+  `data/tier0/_generation_model.json`. Without it each new corpus directory
+  starts its own registry and the one-model rule never compares against
+  tier 0. (Superseded the same day by audit 1's finding 2: a convention is
+  not enough; the tool enforces it.)
+
+## 2026-09-25 — leakage audit re-run: BLOCK on three findings
+
+Audit 1 re-run by `lifespan-auditor` (read-only, synthetic attacks under its
+scratchpad, no exam text opened; Lifespan HEAD d7a7a88, curriculum-learning
+5f3a7e2). Held from 2026-09-22, each re-attacked: `answer_index` bounds and
+chance = 1/len(options) (`evaluate.py:459-466, 572`); `option_sources`
+required with phase/story checks (`evaluate.py:468-509`); `generator_model`
+in `config.json` (`train.py:477`) with every training line read and a mixed
+file refused (`data.py:126-133, 217-246`). Clean: nothing under `exams/` in
+git history, no weights or `.env` tracked, tier-0 corpus 995 lines / 995
+hashes / one model / LF. curriculum-learning `test_generate_responses.py`
+21 passed; the Lifespan suite did not finish inside the audit.
+
+- **BLOCKING — the response generator has no split check and story lines
+  carry no `split`.** Attack: exam-split prompts with `--out` at an existing
+  train `stories.jsonl` were appended without complaint
+  (`generate_responses.py:444-461`). `generate_prompts.py` refuses a split
+  mismatch; the story side, which is what training reads, did not. Fix:
+  refuse a split different from the output file's or registry's, write
+  `split` into every story line, and `data.py` refuses any line whose split
+  is not `train`.
+- **BLOCKING — the one-model rule is still per directory, not per corpus.**
+  A new corpus dir with a different model and no `--corpus-registry` was
+  accepted and silently started its own registry;
+  `existing_hashes_and_model` keeps only the last line's model, so a file
+  of M2 then M1 passed for M1 (`generate_responses.py:216, 252-300`). A stale
+  `data/_generation_model.json` still names `claude-haiku-4-5`. And the
+  training side never sees the exam stories' model. Fix: the corpus
+  registry is required (a new registry only with an explicit new-experiment
+  flag), every line's model is collected, the manifest carries the exam
+  generator model, and `train.py` refuses when it differs from the training
+  corpus's.
+- **BLOCKING before any exam freeze — the only leak check is whole-file
+  SHA-256, and no near-duplicate check or probe builder exists as code.**
+  Synthetic test: an identical copy is refused; the same exam lines with
+  CRLF endings, or all exam lines plus one train line, pass
+  (`guard.py:137-142`). Fix: the manifest carries per-story `prompt_hash`
+  and `story_sha256`; the guard checks every training line against them;
+  the near-duplicate check and the probe builder are code with tests before
+  the pre-pilot exams are frozen.
+- Should-fix: `option_sources[*].story_sha256` is self-attested; a
+  distractor whose hash is in no manifest was accepted. Check it against the
+  manifest's per-story hashes.
+- Should-fix: `N_PHASES = 7` makes `DataModule` refuse a 0/3/6 corpus
+  ("missing training file for phase 1"). Safe as it stands; the danger is
+  the workaround (renaming 3 -> 1 and 6 -> 2 mislabels the matrix and
+  replay). The subset-phase mode is the fix; no renaming, ever.
+- Notes: the pre-pilot manifest is passed with `--manifest` and never
+  committed as `exams/manifest.json`, which would read as the main
+  experiment's freeze; `experiment_id` is recorded but never checked.
+  Train and exam stories sharing facts from one per-activity bank is by
+  design, but a verbatim fact sentence in an exam rewards memorised
+  strings that a 200-character opening check cannot see, so exam-keeper
+  reports verbatim n-gram overlap with training per phase, and checks it is
+  comparable between tier 0's bank and the phase 3/6 banks.
