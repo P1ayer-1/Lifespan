@@ -34,12 +34,12 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import numpy as np
 import torch
 
-from training.config import N_PHASES, replay_sequences_per_batch
+from training.config import N_PHASES, replay_sequences_per_batch, resolve_phases
 from training.tokenizer import Tokenizer
 
 REPLAY_SUBDIR = "replay"
@@ -222,6 +222,7 @@ class DataModule:
         seed: int,
         *,
         n_phases: int = N_PHASES,
+        phases: Sequence[int] | None = None,
         replay_dir: Path | None = None,
         stories_per_phase: int | None = None,
         device: torch.device | None = None,
@@ -230,7 +231,14 @@ class DataModule:
         self.tokenizer = tokenizer
         self.block_size = block_size
         self.seed = seed
-        self.n_phases = n_phases
+        #: The phases this run declares, by their REAL ids (config.resolve_phases).
+        #: Default: 0..n_phases-1, i.e. all seven, which is the grid's behaviour
+        #: unchanged. In subset mode (e.g. (0, 3, 6)) an undeclared phase's file
+        #: may be absent and is never read; a declared phase's file must exist.
+        self.phase_ids: tuple[int, ...] = (
+            tuple(range(n_phases)) if phases is None else resolve_phases(phases)
+        )
+        self.n_phases = len(self.phase_ids)
         self.device = device or torch.device("cpu")
         self.replay_dir = Path(replay_dir) if replay_dir is not None else self.train_dir / REPLAY_SUBDIR
         self.stories_per_phase = stories_per_phase
@@ -239,7 +247,10 @@ class DataModule:
         self.g_replay = make_generator(seed, "data.replay")
         self.g_joint = make_generator(seed, "data.joint")
 
-        self.phases: list[PackedPhase] = [self._load_phase(k) for k in range(n_phases)]
+        #: Packed phases in declared order. `phases[i].phase` is the real id;
+        #: look a phase up by id with `packed(k)`, never by list position.
+        self.phases: list[PackedPhase] = [self._load_phase(k) for k in self.phase_ids]
+        self._by_id: dict[int, PackedPhase] = {p.phase: p for p in self.phases}
         self.generator_model: str = self._check_one_generator()
         self._replay_packs: dict[int, PackedPhase] = {}
         self._replay_pools: dict[int, ReplayPool] = {}
@@ -279,10 +290,25 @@ class DataModule:
 
     # -- loading ------------------------------------------------------------
 
+    @property
+    def subset(self) -> bool:
+        """True when the run declares fewer than all seven phases."""
+        return self.phase_ids != tuple(range(N_PHASES))
+
+    def packed(self, phase: int) -> PackedPhase:
+        """The packed phase with real id `phase`; refuses an undeclared one."""
+        try:
+            return self._by_id[phase]
+        except KeyError:
+            raise DataError(
+                f"phase {phase} is not one of this run's declared phases {list(self.phase_ids)}"
+            ) from None
+
     def phase_path(self, phase: int) -> Path:
         path = self.train_dir / f"train_phase_{phase}.jsonl"
         if not path.is_file():
-            raise DataError(f"missing training file for phase {phase}: {path}")
+            declared = f" (declared phases {list(self.phase_ids)})" if self.subset else ""
+            raise DataError(f"missing training file for phase {phase}{declared}: {path}")
         return path
 
     def _load_phase(self, phase: int) -> PackedPhase:
@@ -333,10 +359,13 @@ class DataModule:
         return self._replay_packs[phase]
 
     def replay_pool(self, before_phase: int) -> ReplayPool:
-        """The pool for a phase: every earlier phase's replay buffer, packed."""
+        """The pool for a phase: every earlier *declared* phase's replay buffer,
+        packed, each row tagged with its real phase id. In a 0/3/6 run phase
+        6 replays phases 0 and 3; phases 1, 2, 4 and 5 were never trained, so
+        there is nothing of theirs to replay."""
         if before_phase not in self._replay_pools:
             seqs, phs = [], []
-            for k in range(before_phase):
+            for k in (k for k in self.phase_ids if k < before_phase):
                 pack = self._replay_pack(k)
                 if len(pack) == 0:
                     raise DataError(f"replay buffer for phase {k} packs to zero sequences")
@@ -362,14 +391,14 @@ class DataModule:
         every arm -- which is the point (`PLAN.md`: "Every arm takes the same
         number of optimizer steps per phase").
         """
-        n_seq = len(self.phases[phase])
+        n_seq = len(self.packed(phase))
         if n_seq == 0:
             raise DataError(f"phase {phase} packs to zero sequences; block_size {self.block_size} too large?")
         return max(1, -(-epochs * n_seq // n_new))
 
     def total_steps_all_phases(self, epochs: int, n_new: int) -> int:
         """Arm A's total, which is what Arm E's "same total tokens" means."""
-        return sum(self.steps_for_phase(k, epochs, n_new) for k in range(self.n_phases))
+        return sum(self.steps_for_phase(k, epochs, n_new) for k in self.phase_ids)
 
     # -- loaders ------------------------------------------------------------
 
@@ -400,7 +429,7 @@ class DataModule:
         `[n_sequences, block_size]` drawn from phase `phase`."""
         if steps is None:
             steps = self.steps_for_phase(phase, epochs, n_sequences)
-        return self._batches(self.phases[phase].sequences, n_sequences, steps, self.g_new)
+        return self._batches(self.packed(phase).sequences, n_sequences, steps, self.g_new)
 
     def make_replay_loader(
         self,
@@ -418,6 +447,7 @@ class DataModule:
         """
         if n_sequences <= 0 or phase <= 0:
             return iter(())
+        self.packed(phase)  # an undeclared phase has no business drawing replay
         pool = self.replay_pool(phase)
         if len(pool) == 0:
             raise DataError(f"replay pool for phase {phase} is empty")
@@ -430,7 +460,8 @@ class DataModule:
             yield (batch, pool.phases[idx]) if with_provenance else batch
 
     def make_joint_loader(self, n_sequences: int, steps: int) -> Iterator[torch.Tensor]:
-        """Arm E: all seven phases shuffled together (`PLAN.md`, arm E)."""
+        """Arm E: every declared phase (all seven on the grid) shuffled
+        together (`PLAN.md`, arm E)."""
         pool = np.concatenate([p.sequences for p in self.phases])
         return self._batches(pool, n_sequences, steps, self.g_joint)
 
@@ -467,13 +498,13 @@ class DataModule:
         """
         n_replay = replay_sequences_per_batch(n_new, replay_fraction)
         per_phase = []
-        for k in range(self.n_phases):
+        for k in self.phase_ids:
             steps = self.steps_for_phase(k, epochs, n_new)
             replay_steps = steps if k > 0 else 0
             per_phase.append(
                 {
                     "phase": k,
-                    "sequences_in_phase": len(self.phases[k]),
+                    "sequences_in_phase": len(self.packed(k)),
                     "steps": steps,
                     "phase_passes": phase_passes,
                     "replay_passes": replay_passes,

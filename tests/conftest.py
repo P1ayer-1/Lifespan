@@ -63,16 +63,19 @@ def write_train_dir(
     stories: int = STORIES_PER_PHASE,
     model: str = "synthetic-fixture",
     model_by_phase: dict[int, str] | None = None,
+    phases: tuple[int, ...] | None = None,
 ) -> Path:
     """`train_phase_{k}.jsonl` plus `replay/phase_{k}.json`, the frozen shapes.
 
     `model_by_phase` overrides the generator id for particular phases, which is
-    how a test builds the corpus that must refuse to train.
+    how a test builds the corpus that must refuse to train. `phases` writes only
+    those phase ids (a subset corpus such as the pre-pilot's 0, 3, 6); the
+    default is `range(n_phases)`.
     """
     root.mkdir(parents=True, exist_ok=True)
     replay_dir = root / "replay"
     replay_dir.mkdir(exist_ok=True)
-    for k in range(n_phases):
+    for k in phases if phases is not None else range(n_phases):
         lines = []
         for i in range(stories):
             lines.append(

@@ -14,6 +14,46 @@ EXAM_TYPES: tuple[str, ...] = ("perplexity", "cloze", "continuation")
 N_PHASES = 7
 SEEDS = (0, 1, 2)
 
+#: The phases a full run trains, in order. Also the default phase list.
+ALL_PHASES: tuple[int, ...] = tuple(range(N_PHASES))
+
+
+def resolve_phases(phases=None) -> tuple[int, ...]:
+    """The phase list a run declares, validated. `None` means all seven.
+
+    Subset-phase mode (leakage re-audit 2026-09-25, should-fix): a corpus that
+    has only some phases -- the pre-pilot's 0, 3 and 6 -- trains those phases
+    under their REAL ids. Phase 3 stays phase 3 in the matrix, the replay pool,
+    the checkpoints and the report; it is never renumbered to 1, because that
+    would mislabel every row and column downstream and nothing would crash.
+
+    Rules, each a refusal rather than a repair:
+      - every id is an int in 0..6 (the matrix is always 7x7);
+      - strictly ascending, no duplicates -- phases are chronological, so an
+        out-of-order list is a mistake, not something to sort quietly;
+      - phase 0 is included: it is the shared phase-0 checkpoint every
+        sequential arm starts from, and the untrained row is scored before it.
+    """
+    if phases is None:
+        return ALL_PHASES
+    out = tuple(phases)
+    if not out:
+        raise ValueError("the phase list is empty")
+    for k in out:
+        if not isinstance(k, int) or isinstance(k, bool) or not 0 <= k < N_PHASES:
+            raise ValueError(f"phase {k!r} is not an int in 0..{N_PHASES - 1}")
+    if any(b <= a for a, b in zip(out, out[1:])):
+        raise ValueError(
+            f"phases {list(out)} must be strictly ascending with no duplicates; "
+            "phases are learned in order and keep their real ids"
+        )
+    if out[0] != 0:
+        raise ValueError(
+            f"phases {list(out)} must include phase 0: every sequential arm starts "
+            "from the shared phase-0 checkpoint"
+        )
+    return out
+
 #: The metric H1-H4 are read on (AGENTS.md, frozen 2026-09-21). "cloze" is
 #: reported beside it; a disagreement is reported as split, not resolved.
 HEADLINE_EXAM_TYPE = "continuation"

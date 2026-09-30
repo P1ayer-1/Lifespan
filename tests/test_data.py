@@ -375,3 +375,136 @@ def test_the_split_check_runs_before_the_pilot_prefix_filter(tmp_path):
     _rewrite_line(train / "train_phase_0.jsonl", 19, lambda rec: rec.__setitem__("split", "exam"))
     with pytest.raises(DataError, match=r"train_phase_0\.jsonl:20 has split 'exam'"):
         module(train, stories_per_phase=5)
+
+
+# ---------------------------------------------------------------------------
+# subset-phase mode (leakage re-audit 2026-09-25, should-fix): a 0/3/6 corpus
+# trains under its REAL phase ids. Never renumbered 3 -> 1.
+
+SUBSET = (0, 3, 6)
+
+
+def _letters(row) -> set[int]:
+    return {b for b in row if b not in (0, ord(" "), ord("\n"), ord("."))}
+
+
+def test_default_still_refuses_a_0_3_6_corpus(tmp_path):
+    """Without a declaration nothing changes: the grid needs all seven."""
+    train = write_train_dir(tmp_path / "train", phases=SUBSET)
+    with pytest.raises(DataError, match=r"missing training file for phase 1: "):
+        module(train)
+
+
+def test_subset_mode_loads_0_3_6_under_their_real_ids(tmp_path):
+    train = write_train_dir(tmp_path / "train", phases=SUBSET)
+    data = module(train, phases=[0, 3, 6])
+    assert data.phase_ids == SUBSET and data.subset
+    assert [p.phase for p in data.phases] == [0, 3, 6]
+    for k in SUBSET:
+        packed = data.packed(k)
+        assert packed.phase == k
+        # content check: phase k's file really is what sits under id k
+        assert _letters(packed.sequences[0].tolist()) <= {phase_byte(k)}
+        assert data.steps_for_phase(k, 4, 4) > 0
+    for k in (1, 2, 4, 5):
+        with pytest.raises(DataError, match=rf"phase {k} is not one of this run's declared phases \[0, 3, 6\]"):
+            data.packed(k)
+        with pytest.raises(DataError, match="not one of this run's declared phases"):
+            data.make_phase_loader(k, 4, steps=1)
+
+
+def test_subset_replay_draws_from_earlier_declared_phases_by_real_id(tmp_path):
+    train = write_train_dir(tmp_path / "train", phases=SUBSET)
+    data = module(train, phases=SUBSET)
+    assert set(data.replay_pool(3).phases.tolist()) == {0}
+    assert set(data.replay_pool(6).phases.tolist()) == {0, 3}
+    n_replay = replay_sequences_per_batch(32, 0.3)
+    for batch, provenance in data.make_replay_loader(n_replay, phase=6, steps=4, with_provenance=True):
+        assert set(provenance.tolist()) <= {0, 3}
+        for row in batch.tolist():
+            assert _letters(row) <= {phase_byte(0), phase_byte(3)}
+
+
+def test_subset_budget_joint_pool_and_summary_carry_real_ids(tmp_path):
+    train = write_train_dir(tmp_path / "train", phases=SUBSET)
+    data = module(train, phases=SUBSET)
+    budget = data.token_budget(4, 4, 0.3)
+    assert [r["phase"] for r in budget["per_phase"]] == [0, 3, 6]
+    assert budget["per_phase"][0]["replay_tokens"] == 0
+    assert all(r["replay_tokens"] > 0 for r in budget["per_phase"][1:])
+    assert [c["phase"] for c in data.corpus_summary()] == [0, 3, 6]
+    assert data.total_steps_all_phases(4, 4) == sum(data.steps_for_phase(k, 4, 4) for k in SUBSET)
+    seen: set[int] = set()
+    for batch in data.make_joint_loader(8, 30):
+        for row in batch.tolist():
+            seen |= _letters(row)
+    assert seen == {phase_byte(k) for k in SUBSET}
+
+
+def test_a_declared_phase_with_no_file_is_still_refused(tmp_path):
+    train = write_train_dir(tmp_path / "train", phases=(0, 6))
+    with pytest.raises(DataError, match=r"missing training file for phase 3 \(declared phases \[0, 3, 6\]\)"):
+        module(train, phases=SUBSET)
+
+
+def test_a_declared_phase_with_no_replay_file_is_still_refused(tmp_path):
+    train = write_train_dir(tmp_path / "train", phases=SUBSET)
+    (train / "replay" / "phase_3.json").unlink()
+    data = module(train, phases=SUBSET)
+    with pytest.raises(DataError, match="replay buffer missing"):
+        list(data.make_replay_loader(14, phase=6, steps=1))
+
+
+def test_undeclared_phase_files_that_exist_are_never_read(toy_dirs, monkeypatch):
+    opened: list[str] = []
+    real_open = Path.open
+
+    def counting_open(self, *a, **kw):
+        if self.name.startswith("train_phase_"):
+            opened.append(self.name)
+        return real_open(self, *a, **kw)
+
+    # an undeclared phase with a bad line cannot stop a subset run it is not in
+    bad = toy_dirs["train"] / "train_phase_1.jsonl"
+    bad.write_text(bad.read_text(encoding="utf-8").replace('"split": "train"', '"split": "exam"'), encoding="utf-8")
+    monkeypatch.setattr(Path, "open", counting_open)
+    module(toy_dirs["train"], phases=SUBSET)
+    assert sorted(opened) == [f"train_phase_{k}.jsonl" for k in SUBSET]
+
+
+def test_declaring_all_seven_is_the_default_exactly(toy_dirs):
+    """The default full run is unchanged: same ids, same packed data, same
+    first batches from every stream, same budget."""
+    a = module(toy_dirs["train"], seed=1)
+    b = module(toy_dirs["train"], seed=1, phases=range(7))
+    assert a.phase_ids == b.phase_ids == tuple(range(7))
+    assert not a.subset and not b.subset
+    for pa, pb in zip(a.phases, b.phases):
+        assert pa.phase == pb.phase and np.array_equal(pa.sequences, pb.sequences)
+    assert torch.equal(next(a.make_phase_loader(2, 4, steps=1)), next(b.make_phase_loader(2, 4, steps=1)))
+    assert torch.equal(
+        next(a.make_replay_loader(2, phase=5, steps=1)), next(b.make_replay_loader(2, phase=5, steps=1))
+    )
+    assert a.token_budget(4, 4, 0.3) == b.token_budget(4, 4, 0.3)
+
+
+@pytest.mark.parametrize(
+    "bad, why",
+    [
+        ([], "empty"),
+        ([3, 6], "must include phase 0"),
+        ([0, 6, 3], "strictly ascending"),
+        ([0, 3, 3], "strictly ascending"),
+        ([0, 7], r"not an int in 0\.\.6"),
+        ([-1, 0], r"not an int in 0\.\.6"),
+        ([0, "3"], r"not an int in 0\.\.6"),
+    ],
+)
+def test_a_bad_phase_declaration_is_refused_not_repaired(tmp_path, bad, why):
+    from training.config import resolve_phases
+
+    with pytest.raises(ValueError, match=why):
+        resolve_phases(bad)
+    train = write_train_dir(tmp_path / "train")
+    with pytest.raises(ValueError, match=why):
+        module(train, phases=bad)
