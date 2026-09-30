@@ -25,7 +25,7 @@ frozen versions; those win).
 - **The near-duplicate check.** Drop any exam story whose first 200 characters
   match a training story's (normalise whitespace and case first). Done once,
   logged per phase, counts recorded in the manifest.
-- **The probe builder** (lives in curriculum-learning beside the generator):
+- **The probe builder** (`training/probes.py`; the near-duplicate check is `training/neardup.py`, both in this repo since 2026-09-30):
   - Lexicon cloze: an exam story with one phase-lexicon word masked; candidates
     are that phase's lexicon; one correct answer.
   - Continuation choice: a prefix, the true next paragraph, three distractors
