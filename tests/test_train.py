@@ -964,3 +964,143 @@ def test_the_cli_takes_a_comma_separated_phase_list():
     for bad in ("3,6", "0,6,3", "0,3,3", "0,7", "0,x", ""):
         with pytest.raises(SystemExit):
             parser.parse_args(base + ["--phases", bad])
+
+
+# ---------------------------------------------------------------------------
+# experiment_id (re-audit note 2026-09-25: "recorded but never checked")
+
+
+def test_the_frozen_command_parses_and_takes_the_configs_experiment_id():
+    """The frozen entry point has no --experiment-id, and must keep working:
+    the id comes from the run config unless the flag names another."""
+    from training.config import EXPERIMENT_ID
+
+    parser = build_parser()
+    base = ["--arm", "A", "--seed", "0", "--train-dir", "t", "--exam-dir", "e", "--out", "o"]
+    assert EXPERIMENT_ID and parser.parse_args(base).experiment_id == EXPERIMENT_ID
+    assert parser.parse_args(base + ["--experiment-id", "pre-pilot"]).experiment_id == "pre-pilot"
+
+
+@pytest.mark.parametrize(
+    "experiment_id,expect",
+    [
+        ("pre-pilot", "experiment_id mismatch"),
+        (None, "no experiment_id given"),
+        ("", "no experiment_id given"),
+        ("<absent>", "experiment_id mismatch: the run expects 'lifespan-main'"),
+    ],
+)
+def test_the_run_refuses_a_wrong_or_missing_experiment_id_before_anything_exists(
+    toy_dirs, experiment_id, expect
+):
+    """The guard is given the run's id every time: a wrong one, a missing one
+    (None / ""), or none at all on an old Namespace (the config's default,
+    which the 'toy' fixture manifest is not) all stop the run before a folder,
+    a tokenizer or a checkpoint exists."""
+    from training.guard import GuardError
+
+    args = toy_args(toy_dirs, "E")
+    if experiment_id == "<absent>":
+        del args.experiment_id
+    else:
+        args.experiment_id = experiment_id
+    with pytest.raises(GuardError, match=expect):
+        run(args, **HOOKS)
+    assert not args.out.exists()
+    assert not toy_dirs["shared"].exists()
+
+
+def test_the_matching_experiment_id_is_recorded(toy_dirs):
+    out = run(toy_args(toy_dirs, "E"), **HOOKS)
+    assert config_of(out)["manifest"]["experiment_id"] == "toy"
+
+
+# ---------------------------------------------------------------------------
+# the scorer is tied to the manifest (2026-09-30)
+
+
+def test_a_tampered_exam_is_refused_before_anything_exists(toy_dirs):
+    """The guard never opens the exam directory; train.py confirms the exam
+    stories on disk against the manifest's per-story hashes right after it."""
+    from training.evaluate import ExamManifestMismatch
+
+    path = toy_dirs["exam"] / "stories" / "exam_phase_4.jsonl"
+    row = json.loads(path.read_text(encoding="utf-8"))
+    row["story"] += " edited after the freeze"
+    path.write_text(json.dumps(row) + NL, encoding="utf-8")
+    args = toy_args(toy_dirs, "E")
+    with pytest.raises(ExamManifestMismatch, match="exam_phase_4.jsonl.*is not in the manifest"):
+        run(args, **HOOKS)
+    assert not args.out.exists()
+    assert not toy_dirs["shared"].exists()
+
+
+def test_the_scorer_receives_the_guards_exam_story_hashes(toy_dirs):
+    """Every evaluate_all call gets `story_hashes` = the manifest's map, the
+    one the guard report carries, not a map recomputed from the exam dir."""
+    from tests.conftest import manifest_stories_of
+
+    frozen = {e["story_sha256"]: e["phase"] for e in manifest_stories_of(toy_dirs["exam"])}
+    seen: list = []
+
+    def scorer(model, exam_dir, phases, *, story_hashes=None):
+        seen.append(story_hashes)
+        return fake_evaluate_all(model, exam_dir, phases)
+
+    out = run(toy_args(toy_dirs, "E"), after_phase=hooks.identity_after_phase, evaluate_all=scorer)
+    assert len(seen) == 1 + N_PHASES
+    assert all(s == frozen for s in seen)
+    verified = config_of(out)["manifest"]["exam_stories_verified"]
+    assert verified == {str(k): 1 for k in range(N_PHASES)}
+
+
+def test_the_resolved_real_scorer_binds_story_hashes():
+    pytest.importorskip("training.evaluate")
+    from training.tokenizer import ByteTokenizer
+    from training.train import bind_tokenizer, make_eval_config, resolve_evaluate_all
+
+    frozen = {"a" * 64: 0}
+    bound = bind_tokenizer(
+        resolve_evaluate_all(), ByteTokenizer(), make_eval_config(TOY), story_hashes=frozen
+    )
+    assert bound.keywords["story_hashes"] is frozen
+    # a stub without the parameter is left alone
+    assert bind_tokenizer(fake_evaluate_all, ByteTokenizer(), story_hashes=frozen) is fake_evaluate_all
+
+
+def test_a_real_run_refuses_an_exam_file_swapped_mid_run(scoreable_dirs):
+    """The scorer re-checks each row it scores, so an exam changed after the
+    up-front check (a remounted dataset) still cannot be scored."""
+    pytest.importorskip("training.evaluate")
+    from training.evaluate import ExamManifestMismatch
+
+    path = scoreable_dirs["exam"] / "stories" / "exam_phase_2.jsonl"
+    calls: list = []
+
+    def swap_after_first_phase(model, phase_k, ctx):
+        calls.append(phase_k)
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        rows[0]["story"] = "a different story entirely."
+        path.write_text(NL.join(json.dumps(r) for r in rows) + NL, encoding="utf-8")
+        return model
+
+    with pytest.raises(ExamManifestMismatch, match="exam_phase_2.jsonl"):
+        run(toy_args(scoreable_dirs, "E"), after_phase=swap_after_first_phase)
+    assert len(calls) == 1, "the first row scored after the swap must refuse"
+
+
+def test_a_subset_run_verifies_only_its_declared_exam_phases(subset_dirs):
+    """Phases 1, 2, 4, 5 are never scored in a 0/3/6 run, so their exam files
+    are not required; a declared phase's file is."""
+    from tests.conftest import write_manifest
+    from training.evaluate import ExamManifestMismatch
+
+    for k in (1, 2, 4, 5):
+        (subset_dirs["exam"] / "stories" / f"exam_phase_{k}.jsonl").unlink()
+    write_manifest(subset_dirs["manifest"], subset_dirs["exam"])
+    out = run(subset_args(subset_dirs, "E"), **HOOKS)
+    assert config_of(out)["manifest"]["exam_stories_verified"] == {"0": 1, "3": 1, "6": 1}
+
+    (subset_dirs["exam"] / "stories" / "exam_phase_3.jsonl").unlink()
+    with pytest.raises(ExamManifestMismatch, match="exam stories for phase 3 are missing"):
+        run(subset_args(subset_dirs, "E", out=subset_dirs["results"] / "again"), **HOOKS)

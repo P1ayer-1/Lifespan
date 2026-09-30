@@ -16,9 +16,16 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import write_exam_dir, write_manifest, write_train_dir
-from training.guard import GuardError, check, load_manifest, sha256_file
+from training.guard import GuardError, load_manifest, sha256_file
+from training.guard import check as guard_check
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def check(train_dir, exam_dir, manifest, *, experiment_id="toy"):
+    """`guard.check` with the fixture manifest's experiment id. The id is
+    required since 2026-09-30; the tests of that call `guard_check` directly."""
+    return guard_check(train_dir, exam_dir, manifest, experiment_id=experiment_id)
 
 
 def test_a_clean_pair_passes_and_reports_the_hashes(toy_dirs):
@@ -158,6 +165,7 @@ def test_the_entry_point_exits_non_zero_before_building_a_model(toy_dirs, break_
             "--out", str(out),
             "--manifest", str(toy_dirs["manifest"]),
             "--phase0-dir", str(toy_dirs["shared"]),
+            "--experiment-id", "toy",
             "--toy", "--cpu",
         ]
     )
@@ -225,7 +233,7 @@ def test_a_clean_corpus_with_per_story_manifest_passes(guarded):
     report = check(guarded["train"], guarded["exam"], guarded["manifest"])
     assert report.generator_model == FIXTURE_MODEL
     assert report.n_train_lines_checked == 7 * 20 + 7  # story lines + one line per replay file
-    assert report.n_manifest_stories == 4  # placeholder + three synthetic
+    assert report.n_manifest_stories == 7 + 3  # one placeholder per phase + three synthetic
     assert story_sha256(guarded["rows"][0]["story"]) in report.exam_story_phases
 
 
@@ -385,3 +393,28 @@ def test_the_cli_checks_the_experiment_id(toy_dirs, capsys):
     assert "guard ok" in capsys.readouterr().out
     with pytest.raises(GuardError, match="experiment_id mismatch"):
         guard_main(args + ["--experiment-id", "other"])
+
+
+@pytest.mark.parametrize("missing", [None, "", "   "])
+def test_a_missing_experiment_id_is_refused_not_skipped(toy_dirs, missing):
+    """The manifest always has an experiment_id (load_manifest requires one),
+    so a caller that names none must be refused: before 2026-09-30 `None`
+    skipped the comparison, which is the re-audit's "recorded but never
+    checked" in code."""
+    with pytest.raises(GuardError, match="no experiment_id given.*'toy'"):
+        guard_check(toy_dirs["train"], toy_dirs["exam"], toy_dirs["manifest"], experiment_id=missing)
+    with pytest.raises(GuardError, match="no experiment_id given"):
+        guard_check(toy_dirs["train"], toy_dirs["exam"], toy_dirs["manifest"])
+
+
+def test_the_cli_defaults_to_the_run_configs_experiment_id(toy_dirs):
+    """No --experiment-id means training.config.EXPERIMENT_ID, exactly as
+    train.py: the fixture manifest is for 'toy', so the default is refused."""
+    from training.config import EXPERIMENT_ID
+
+    args = ["--train-dir", str(toy_dirs["train"]), "--exam-dir", str(toy_dirs["exam"]),
+            "--manifest", str(toy_dirs["manifest"])]
+    with pytest.raises(GuardError, match="experiment_id mismatch: the run expects " + repr(EXPERIMENT_ID)):
+        guard_main(args)
+    write_manifest(toy_dirs["manifest"], toy_dirs["exam"], experiment_id=EXPERIMENT_ID)
+    assert guard_main(args) == 0

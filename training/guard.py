@@ -24,8 +24,10 @@ What `check()` refuses, every one of them by raising `GuardError`:
 - training story lines without a `model`, with more than one `model`, or whose
   one model differs from the manifest's `generator_model` (the exam
   generator's; audit 2026-09-25, blocking finding 2, training side);
-- a manifest `experiment_id` different from the one the caller expects, when
-  the caller passes one.
+- a manifest `experiment_id` different from the one the caller expects, and a
+  caller that expects none: `experiment_id` is required, so a run that does
+  not name its experiment is refused rather than checked against nothing
+  (audit note 2026-09-25, "recorded but never checked"; wired 2026-09-30).
 
 Manifest fields required beyond the 2026-09-21 frozen shape -- additions,
 nothing renamed (`REQUIRED_MANIFEST_ADDITIONS`; the lead freezes them):
@@ -392,7 +394,9 @@ def check(
     """Hash every training file, check every training line against the
     manifest's stories and generator model, and refuse the run on any hit.
 
-    `experiment_id`, when given, must equal the manifest's. Returns the hashes
+    `experiment_id` is required and must equal the manifest's; `None` or a
+    blank string is refused (before 2026-09-30 it skipped the check, which the
+    leakage re-audit called "recorded but never checked"). Returns the hashes
     so `runrecord.py` can put them in `config.json`; raises `GuardError`
     otherwise.
     """
@@ -407,7 +411,14 @@ def check(
         raise GuardError(f"--exam-dir does not exist or is not a directory: {exam_dir}")
 
     manifest = load_manifest(manifest_path)
-    if experiment_id is not None and experiment_id != manifest["experiment_id"]:
+    if experiment_id is None or not str(experiment_id).strip():
+        raise GuardError(
+            f"no experiment_id given, but the manifest {manifest_path} is for "
+            f"{manifest['experiment_id']!r}. A run must name the experiment it belongs to "
+            "(training.config.EXPERIMENT_ID, or train.py --experiment-id); an unchecked id "
+            "is how a run gets scored against another experiment's exams."
+        )
+    if experiment_id != manifest["experiment_id"]:
         raise GuardError(
             f"experiment_id mismatch: the run expects {experiment_id!r} but the manifest "
             f"{manifest_path} is for {manifest['experiment_id']!r}"
@@ -465,8 +476,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--train-dir", required=True, type=Path)
     parser.add_argument("--exam-dir", required=True, type=Path)
     parser.add_argument("--manifest", type=Path, default=Path("exams/manifest.json"))
+    from training.config import EXPERIMENT_ID
+
     parser.add_argument(
-        "--experiment-id", default=None, help="refuse unless the manifest's experiment_id is this"
+        "--experiment-id",
+        default=EXPERIMENT_ID,
+        help=(
+            "refuse unless the manifest's experiment_id is this "
+            f"(default: training.config.EXPERIMENT_ID, {EXPERIMENT_ID!r}, as train.py)"
+        ),
     )
     args = parser.parse_args(argv)
     report = check(args.train_dir, args.exam_dir, args.manifest, experiment_id=args.experiment_id)
