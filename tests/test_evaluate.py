@@ -32,6 +32,8 @@ from training.evaluate import (
     _score_spans,
     evaluate_all,
     evaluate_all_detailed,
+    exam_story_phases,
+    load_jsonl,
     score_cloze_phase,
     score_continuation_phase,
     score_perplexity_phase,
@@ -357,6 +359,63 @@ def test_provenance_errors_never_carry_exam_text():
     assert "k0" in str(exc.value)
 
 
+# option_sources hashes are checked against the exam's per-story hashes
+# (leakage audit 2026-09-25, should-fix: they were self-attested).
+
+KNOWN = {"a" * 64: 2, "b" * 64: 3, "c" * 64: 4, "d" * 64: 5}
+
+
+def test_option_sources_whose_hashes_are_exam_stories_pass():
+    assert validate_continuation_item(a_continuation_item(), KNOWN) == 4
+    assert validate_continuation_item(a_continuation_item(), set(KNOWN)) == 4
+
+
+def test_a_distractor_whose_hash_is_in_no_manifest_is_refused():
+    item = a_continuation_item()
+    item["option_sources"][2]["story_sha256"] = "e" * 64
+    with pytest.raises(ValueError, match=r"option_sources\[2\].story_sha256 e{64} is not the hash"):
+        validate_continuation_item(item, KNOWN)
+    with pytest.raises(ValueError, match="is not the hash of any exam story"):
+        score_continuation_phase(
+            ConstantLogitsLM(make_pref()), [item], TOK, CFG, DEV, known_story_hashes=set(KNOWN)
+        )
+
+
+def test_a_source_claiming_the_wrong_phase_for_its_story_is_refused():
+    item = a_continuation_item()
+    item["option_sources"][3]["story_sha256"] = "c" * 64  # a phase-4 story, claimed as 5
+    with pytest.raises(ValueError, match="claims phase 5 but story c{64} is an exam story of phase 4"):
+        validate_continuation_item(item, KNOWN)
+
+
+def test_the_hook_checks_option_sources_against_the_exam_stories_by_default(tmp_path):
+    """No hashes passed: the hook derives them from the exam stories on disk,
+    so the check cannot be switched off by forgetting an argument."""
+    exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=2, n_probes=2)
+    known = exam_story_phases(exam_dir)
+    assert len(known) == 2 * N_PHASES
+    evaluate_all(TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG)  # clean passes
+
+    path = exam_dir / "probes" / "continuation_phase_0.jsonl"
+    rows = load_jsonl(path)
+    rows[1]["option_sources"][1]["story_sha256"] = "f" * 64  # a distractor from nowhere
+    _write_jsonl(path, rows)
+    with pytest.raises(ValueError, match="is not the hash of any exam story"):
+        evaluate_all(TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG)
+    # an explicit hash map (the manifest's, via the guard report) is used as given
+    with pytest.raises(ValueError, match="is not the hash of any exam story"):
+        evaluate_all(TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG, story_hashes=known)
+    evaluate_all(
+        TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG, story_hashes={**known, "f" * 64: 1}
+    )
+
+
+def test_an_exam_dir_without_stories_cannot_vouch_for_option_sources(tmp_path):
+    (tmp_path / "stories").mkdir()
+    with pytest.raises(ValueError, match="no exam stories"):
+        exam_story_phases(tmp_path)
+
+
 def test_answer_index_is_bounds_checked():
     model = ConstantLogitsLM(make_pref())
     for bad in (4, -1, 99):
@@ -508,11 +567,15 @@ def write_synthetic_exam_dir(
 def _write_length_bias_exam_dir(tmp_path: Path) -> Path:
     """The hand-worked length-bias item in phase 0, filler elsewhere."""
     root = write_synthetic_exam_dir(tmp_path / "exams")
+    # option_sources must name real exam stories (audit 2026-09-25), so borrow
+    # the provenance of the builder's own first phase-0 item.
+    path = root / "probes" / "continuation_phase_0.jsonl"
+    sources = load_jsonl(path)[0]["option_sources"]
     _write_jsonl(
-        root / "probes" / "continuation_phase_0.jsonl",
+        path,
         [{"id": "k1", "phase": 0, "prefix": "q", "options": ["xxxx", "y", "yy", "zz"],
-          "answer_index": 0, "distractor_phases": [1, 2, 3],
-          "option_sources": fake_sources(0, 1, 4, 0)}],
+          "answer_index": 0, "distractor_phases": [s["phase"] for s in sources[1:]],
+          "option_sources": sources}],
     )
     return root
 
