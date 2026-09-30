@@ -603,7 +603,11 @@ def test_a_two_model_corpus_does_not_train_through_the_entry_point(tmp_path):
         "train": train, "exam": exam, "manifest": write_manifest(tmp_path / "m.json", exam),
         "results": tmp_path / "results", "shared": tmp_path / "shared", "tmp": tmp_path,
     }
-    with pytest.raises(DataError, match="2 different models"):
+    # Since 2026-09-30 the guard (training/guard.py) reads every story line's
+    # model before data.py does and refuses first; either refusal is the point.
+    from training.guard import GuardError
+
+    with pytest.raises((DataError, GuardError), match="2 different (generator )?models"):
         run(toy_args(dirs, "E", 0), **HOOKS)
     # nothing was trained and no result folder survives as a half-run
     assert not (dirs["results"] / "E_s0" / "matrix.json").exists()
@@ -625,7 +629,9 @@ def test_the_refusal_happens_before_a_model_is_built(tmp_path, monkeypatch):
         "train": train, "exam": exam, "manifest": write_manifest(tmp_path / "m.json", exam),
         "results": tmp_path / "results", "shared": tmp_path / "shared", "tmp": tmp_path,
     }
-    with pytest.raises(DataError):
+    from training.guard import GuardError
+
+    with pytest.raises((DataError, GuardError)):
         run(toy_args(dirs, "A", 0), **HOOKS)
     assert built == [], "a model was constructed before the corpus was rejected"
 
