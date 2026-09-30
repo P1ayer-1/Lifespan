@@ -26,6 +26,14 @@ just the first (`AGENTS.md`/brief, wave 2):
    folder name but train.py stamps a fresh timestamp into config.json each
    time it writes.)
 
+6. Subset runs (`train.py --phases 0,3,6`): config.json's `"phases"` must be a
+   valid declared list (ints in 0..6, strictly ascending, starting at 0), and
+   then only the declared rows of `M`, and within every row and the
+   `untrained` row only the declared exam columns, must be finite. Rows of
+   undeclared phases may be null and undeclared columns NaN; phase ids are
+   never renumbered. No `"phases"` key means all seven (every run before the
+   flag), so a full 0..6 folder is checked exactly as before.
+
 This module does not import anything from `training/` (three other agents are
 mid-edit on it as this is written); it reads only the four JSON/text files a
 result folder contracts to produce.
@@ -88,13 +96,36 @@ def _load_json(path: Path, failures: Failures, label: str) -> dict | None:
 PHASE0_ARM_NAME = "phase0"
 
 
-def _trained_phases_for(arm: str | None) -> set[int]:
+def _trained_phases_for(arm: str | None, phases: tuple[int, ...] = tuple(range(N_PHASES))) -> set[int]:
     if arm == PHASE0_ARM_NAME:
         return {0}
-    return set(range(N_PHASES))
+    return set(phases)
 
 
-def _check_matrix(run_dir: Path, failures: Failures, *, arm: str | None) -> None:
+def parse_phases(value: Any) -> tuple[int, ...] | str:
+    """config.json's `"phases"` (the run's declared phases, `train.py
+    --phases`), validated by the rules of `training.config.resolve_phases`,
+    restated here because this module imports nothing from `training/`:
+    a non-empty list of ints in 0..6, strictly ascending, starting at 0.
+    Returns the tuple, or a failure message."""
+    if not isinstance(value, list) or not value:
+        return f"config.json 'phases' must be a non-empty list, got {value!r}"
+    if any(isinstance(k, bool) or not isinstance(k, int) or not 0 <= k < N_PHASES for k in value):
+        return f"config.json 'phases' {value!r} holds something that is not an int in 0..{N_PHASES - 1}"
+    if any(b <= a for a, b in zip(value, value[1:])):
+        return f"config.json 'phases' {value!r} is not strictly ascending"
+    if value[0] != 0:
+        return f"config.json 'phases' {value!r} does not start at phase 0"
+    return tuple(value)
+
+
+def _check_matrix(
+    run_dir: Path,
+    failures: Failures,
+    *,
+    arm: str | None,
+    phases: tuple[int, ...] = tuple(range(N_PHASES)),
+) -> None:
     path = run_dir / "matrix.json"
     if not path.exists():
         return  # already reported by the missing-files check
@@ -106,7 +137,10 @@ def _check_matrix(run_dir: Path, failures: Failures, *, arm: str | None) -> None
         return
     untrained = data["untrained"]
     m = data["M"]
-    trained_phases = _trained_phases_for(arm)
+    trained_phases = _trained_phases_for(arm, phases)
+    #: Exam columns that must be scored: the declared phases. An undeclared
+    #: column is NaN in a subset run by design (never examined).
+    scored_columns = set(phases)
     for exam_type in EXAM_TYPES:
         # untrained row
         if not isinstance(untrained, dict) or exam_type not in untrained:
@@ -119,7 +153,7 @@ def _check_matrix(run_dir: Path, failures: Failures, *, arm: str | None) -> None
                     f"{len(row) if isinstance(row, list) else type(row).__name__} entries, expected {N_PHASES}"
                 )
             else:
-                bad = [j for j, v in enumerate(row) if not _is_finite_number(v)]
+                bad = [j for j, v in enumerate(row) if j in scored_columns and not _is_finite_number(v)]
                 if bad:
                     failures.add(
                         f"matrix.json: untrained[{exam_type!r}] has non-finite/missing cell(s) at index {bad}"
@@ -143,8 +177,10 @@ def _check_matrix(run_dir: Path, failures: Failures, *, arm: str | None) -> None
                 )
                 continue
             if i not in trained_phases:
-                continue  # phase0's untrained-forever rows (see PHASE0_ARM_NAME above)
-            bad = [j for j, v in enumerate(row) if not _is_finite_number(v)]
+                # phase0's untrained-forever rows (see PHASE0_ARM_NAME above), or
+                # a subset run's undeclared phase: null by design.
+                continue
+            bad = [j for j, v in enumerate(row) if j in scored_columns and not _is_finite_number(v)]
             if bad:
                 failures.add(
                     f"matrix.json: M[{exam_type!r}][{i}] has non-finite/missing cell(s) at column {bad}"
@@ -228,19 +264,22 @@ def _check_run_id(run_dir: Path, failures: Failures) -> None:
         )
 
 
-def _arm_for_matrix_check(run_dir: Path) -> str | None:
-    """Reads config.json's `arm` field, silently -- config.json's own
-    validity is `_check_run_id`'s job and is not re-reported here. Used only
-    to tell a `phase0` folder's legitimately-partial matrix from every other
-    arm's, which must be complete."""
+def _config_for_matrix_check(run_dir: Path) -> dict:
+    """config.json, read silently -- its own validity is `_check_run_id`'s
+    job and is not re-reported here. Used to tell a legitimately-partial
+    matrix (a `phase0` folder, a subset run) from an incomplete one."""
     path = run_dir / "config.json"
     if not path.exists():
-        return None
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
-    return data.get("arm") if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _arm_for_matrix_check(run_dir: Path) -> str | None:
+    return _config_for_matrix_check(run_dir).get("arm")
 
 
 def validate(run_dir: Path) -> Failures:
@@ -259,7 +298,15 @@ def validate(run_dir: Path) -> Failures:
         # Still run the other checks against whatever files DO exist, so a
         # partial folder gets a full report in one pass.
 
-    _check_matrix(run_dir, failures, arm=_arm_for_matrix_check(run_dir))
+    config = _config_for_matrix_check(run_dir)
+    phases: tuple[int, ...] = tuple(range(N_PHASES))
+    if "phases" in config:
+        parsed = parse_phases(config["phases"])
+        if isinstance(parsed, str):
+            failures.add(parsed)
+        else:
+            phases = parsed
+    _check_matrix(run_dir, failures, arm=config.get("arm"), phases=phases)
     _check_commit(run_dir, failures)
     _check_timings(run_dir, failures)
     _check_run_id(run_dir, failures)
