@@ -136,14 +136,22 @@ def write_scoreable_exam_dir(root: Path, n_phases: int = N_PHASES, items_per_typ
     def story_id(phase: int, i: int) -> str:
         return f"exam_{phase}_{i}"
 
+    def story_text(phase: int, i: int) -> str:
+        letter = phase_letter(phase)
+        return f"{letter * 3} {letter * 4} {letter * 2} story {i}." + NL
+
     def story_sha(phase: int, i: int) -> str:
-        return hashlib.sha256(story_id(phase, i).encode("utf-8")).hexdigest()
+        # the manifest's normalised story hash of the story each option cites,
+        # which the evaluator checks option_sources against (audit 2026-09-25)
+        from training.guard import story_sha256
+
+        return story_sha256(story_text(phase, i))
 
     for k in range(n_phases):
         letter = phase_letter(k)
         other = (k + 1) % n_phases
         rows = [
-            {"id": story_id(k, i), "phase": k, "story": f"{letter * 3} {letter * 4} {letter * 2} story {i}." + NL}
+            {"id": story_id(k, i), "phase": k, "story": story_text(k, i)}
             for i in range(items_per_type)
         ]
         (stories_dir / f"exam_phase_{k}.jsonl").write_text(
@@ -193,8 +201,50 @@ def write_scoreable_exam_dir(root: Path, n_phases: int = N_PHASES, items_per_typ
     return root
 
 
-def write_manifest(path: Path, exam_dir: Path, extra_hashes: list[str] | None = None) -> Path:
-    """A manifest of the placeholder exam directory, plus any planted hashes."""
+FIXTURE_MODEL = "synthetic-fixture"
+
+
+def manifest_stories_of(exam_dir: Path) -> list[dict]:
+    """The manifest's per-story entries for every story line under
+    `exam_dir/stories/`, or one invented entry for the placeholder exam dir
+    (whose only line is not a story), so the guard's required list is never
+    empty."""
+    from training.guard import manifest_story_entry, story_sha256
+
+    out = []
+    stories_dir = Path(exam_dir) / "stories"
+    for f in sorted(stories_dir.glob("*.jsonl")) if stories_dir.is_dir() else []:
+        for line in f.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line) if line.strip() else {}
+            if "story" in row:
+                out.append(manifest_story_entry(row))
+    if not out:
+        out.append(
+            {
+                "story_id": "exam-placeholder",
+                "prompt_hash": "exam-placeholder",
+                "story_sha256": story_sha256("a placeholder exam story no fixture writes"),
+                "phase": 0,
+            }
+        )
+    return out
+
+
+def write_manifest(
+    path: Path,
+    exam_dir: Path,
+    extra_hashes: list[str] | None = None,
+    *,
+    stories: list[dict] | None = None,
+    extra_stories: list[dict] | None = None,
+    generator_model: str = FIXTURE_MODEL,
+    experiment_id: str = "toy",
+) -> Path:
+    """A manifest of the exam directory, plus any planted hashes.
+
+    `stories` / `extra_stories` are the per-story entries the guard checks every
+    training line against (default: derived from `exam_dir`); `generator_model`
+    must equal the training corpus's model (`write_train_dir`'s default)."""
     files = []
     for f in sorted(p for p in Path(exam_dir).rglob("*") if p.is_file()):
         files.append(
@@ -211,13 +261,16 @@ def write_manifest(path: Path, exam_dir: Path, extra_hashes: list[str] | None = 
     path.write_text(
         json.dumps(
             {
-                "experiment_id": "toy",
+                "experiment_id": experiment_id,
                 "frozen_at": "2026-09-21T00:00:00Z",
                 "generator_commit": "0" * 40,
                 "seed": 42,
                 "config_hashes": {},
                 "files": files,
                 "near_duplicates_dropped": {str(k): 0 for k in range(N_PHASES)},
+                "generator_model": generator_model,
+                "stories": (manifest_stories_of(exam_dir) if stories is None else list(stories))
+                + list(extra_stories or []),
             }
         ),
         encoding="utf-8",

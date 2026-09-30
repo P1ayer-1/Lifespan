@@ -49,7 +49,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 
@@ -67,6 +67,7 @@ __all__ = [
     "score_continuation_phase",
     "score_perplexity_phase",
     "validate_continuation_item",
+    "exam_story_phases",
     "load_jsonl",
 ]
 
@@ -421,7 +422,34 @@ def score_cloze_phase(
     return correct / len(items), len(items), chance
 
 
-def validate_continuation_item(row: dict) -> int:
+def exam_story_phases(exam_dir: str | Path, phases: Iterable[int] | None = None) -> dict[str, int]:
+    """normalised story sha256 -> phase for every exam story on disk.
+
+    The hash is `training.guard.story_sha256`, the one the manifest's
+    per-story entries carry. Every phase's stories file is read (distractors
+    come from *other* phases), and a phase whose file is missing is skipped;
+    an exam dir with no stories at all raises.
+    """
+    from training.guard import story_sha256
+
+    exam_dir = Path(exam_dir)
+    out: dict[str, int] = {}
+    for phase in range(N_PHASES) if phases is None else phases:
+        path = _stories_path(exam_dir, phase)
+        if not path.is_file():
+            continue
+        for row in load_jsonl(path):
+            if "story" in row:
+                out[story_sha256(row["story"])] = int(row.get("phase", phase))
+    if not out:
+        raise ValueError(
+            "no exam stories under " + str(exam_dir / "stories")
+            + "; option_sources cannot be checked against anything"
+        )
+    return out
+
+
+def validate_continuation_item(row: dict, known_story_hashes: Any = None) -> int:
     """Check one continuation item and return its option count.
 
     Raises on anything that would make the score meaningless. Cloze items have
@@ -444,7 +472,13 @@ def validate_continuation_item(row: dict) -> int:
         story_sha256 and phase;
       - the answer option's source phase equals the item's own phase;
       - each of the other options' sources has neither the item's phase nor the
-        answer's story id.
+        answer's story id;
+      - when `known_story_hashes` is given (a set of exam story hashes, or a
+        mapping hash -> phase), every source's `story_sha256` is a member, and
+        with a mapping its claimed `phase` is the phase the exam records. The
+        hash was self-attested until the 2026-09-25 audit: a distractor whose
+        hash was in no manifest was accepted. `evaluate_all_detailed` always
+        passes one.
 
     Error messages carry ids, phases and hashes only - never a prefix, an
     option or any other exam text, because a traceback ends up in a Kaggle
@@ -484,6 +518,20 @@ def validate_continuation_item(row: dict) -> int:
             raise ValueError(
                 where + ": option_sources[" + str(i) + "] is missing " + ", ".join(missing)
             )
+        if known_story_hashes is not None:
+            sha = str(source["story_sha256"]).lower()
+            if sha not in known_story_hashes:
+                raise ValueError(
+                    where + ": option_sources[" + str(i) + "].story_sha256 " + sha
+                    + " is not the hash of any exam story; an option's source must be "
+                    "an exam story recorded in the manifest"
+                )
+            if isinstance(known_story_hashes, Mapping) and known_story_hashes[sha] != source["phase"]:
+                raise ValueError(
+                    where + ": option_sources[" + str(i) + "] claims phase "
+                    + repr(source["phase"]) + " but story " + sha + " is an exam story of phase "
+                    + repr(known_story_hashes[sha])
+                )
 
     item_phase = row.get("phase")
     answer_source = sources[answer_index]
@@ -516,8 +564,12 @@ def score_continuation_phase(
     tokenizer: Any,
     cfg: EvalConfig,
     device: torch.device,
+    known_story_hashes: Any = None,
 ) -> tuple[float, float, int, float | None]:
     """Returns (normalised accuracy, summed accuracy, n_items, chance).
+
+    `known_story_hashes` is passed to `validate_continuation_item` for every
+    item (a set of exam story hashes, or a mapping hash -> phase).
 
     The headline is the length-normalised accuracy - the mean per-token
     log-likelihood of the option given the prefix. The summed accuracy is
@@ -531,9 +583,9 @@ def score_continuation_phase(
     """
     if not items:
         return float("nan"), float("nan"), 0, None
-    n_options = validate_continuation_item(items[0])
+    n_options = validate_continuation_item(items[0], known_story_hashes)
     for row in items[1:]:
-        k = validate_continuation_item(row)
+        k = validate_continuation_item(row, known_story_hashes)
         if k != n_options:
             raise ValueError(
                 "continuation item " + repr(row.get("id")) + " has " + str(k)
@@ -592,15 +644,24 @@ def evaluate_all_detailed(
     *,
     tokenizer: Any | None = None,
     cfg: EvalConfig | None = None,
+    story_hashes: Mapping[str, int] | None = None,
 ) -> EvalResult:
     """Score every exam type on every phase in `phases`.
 
     A phase not listed in `phases` gets `nan` in its slot, so the returned
     lists are always length `N_PHASES`. The grid always passes all seven: a
     phase not yet trained is still scored (the matrix's upper triangle).
+
+    `story_hashes` (normalised story sha256 -> phase, e.g. the guard report's
+    `exam_story_phases`, i.e. the manifest's) is what every continuation
+    option's `option_sources[*].story_sha256` must be a member of. Without it
+    the set is computed from the exam stories on disk (`exam_story_phases`),
+    so the check never silently turns off.
     """
     cfg = cfg or EvalConfig()
     exam_dir = Path(exam_dir)
+    if story_hashes is None:
+        story_hashes = exam_story_phases(exam_dir)
     wanted = sorted(set(range(N_PHASES) if phases is None else phases))
     tok = _resolve_tokenizer(model, tokenizer)
     device = torch.device(cfg.device) if cfg.device is not None else _model_device(model)
@@ -628,7 +689,9 @@ def evaluate_all_detailed(
             chance["cloze"][phase] = ch
 
             cont_items = load_jsonl(_probes_path(exam_dir, phase, "continuation"))
-            acc_n, acc_s, n, ch2 = score_continuation_phase(model, cont_items, tok, cfg, device)
+            acc_n, acc_s, n, ch2 = score_continuation_phase(
+                model, cont_items, tok, cfg, device, known_story_hashes=story_hashes
+            )
             scores["continuation"][phase] = acc_n
             summed[phase] = acc_s
             n_items["continuation"][phase] = n
@@ -647,6 +710,7 @@ def evaluate_all(
     *,
     tokenizer: Any | None = None,
     cfg: EvalConfig | None = None,
+    story_hashes: Mapping[str, int] | None = None,
 ) -> dict[str, list[float]]:
     """The frozen hook: {exam_type: [7 floats]}, exactly the EXAM_TYPES keys.
 
@@ -660,7 +724,7 @@ def evaluate_all(
     `evaluate_all_detailed(...).as_matrix_row()` for `matrix.json`.
     """
     return evaluate_all_detailed(
-        model, exam_dir, phases, tokenizer=tokenizer, cfg=cfg
+        model, exam_dir, phases, tokenizer=tokenizer, cfg=cfg, story_hashes=story_hashes
     ).as_hook_dict()
 
 
