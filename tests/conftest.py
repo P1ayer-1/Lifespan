@@ -84,6 +84,7 @@ def write_train_dir(
                         "story": make_story(k, i),
                         "model": (model_by_phase or {}).get(k, model),
                         "timestamp": "2026-09-21T00:00:00Z",
+                        "split": "train",
                     }
                 )
             )

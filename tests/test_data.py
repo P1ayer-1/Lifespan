@@ -311,3 +311,67 @@ def test_the_check_costs_no_extra_pass_over_the_corpus(toy_dirs, monkeypatch):
     data = module(toy_dirs["train"])
     assert data.generator_model
     assert sorted(opened) == sorted(f"train_phase_{k}.jsonl" for k in range(7))
+
+
+# ---------------------------------------------------------------------------
+# split provenance (leakage re-audit 2026-09-25, BLOCKING): a story line that is
+# not declared `split: "train"` never reaches the model.
+
+
+def _rewrite_line(path: Path, index: int, edit) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    rec = json.loads(lines[index])
+    edit(rec)
+    lines[index] = json.dumps(rec)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_every_fixture_line_says_train_and_loads(toy_dirs):
+    for k in range(7):
+        for line in (toy_dirs["train"] / f"train_phase_{k}.jsonl").read_text(encoding="utf-8").splitlines():
+            assert json.loads(line)["split"] == "train"
+    module(toy_dirs["train"])
+
+
+@pytest.mark.parametrize("split", ["exam", "test", "", "TRAIN", " train", None])
+def test_a_line_whose_split_is_not_train_refuses(tmp_path, split):
+    train = write_train_dir(tmp_path / "train")
+    path = train / "train_phase_4.jsonl"
+    _rewrite_line(path, 7, lambda rec: rec.__setitem__("split", split))
+    with pytest.raises(DataError) as exc:
+        module(train)
+    message = str(exc.value)
+    assert f"{path}:8" in message  # the file and the 1-based line
+    assert f"has split {split!r}" in message
+    assert "not a flag to override" in message
+
+
+def test_a_line_with_no_split_field_refuses(tmp_path):
+    train = write_train_dir(tmp_path / "train")
+    path = train / "train_phase_1.jsonl"
+    _rewrite_line(path, 0, lambda rec: rec.pop("split"))
+    with pytest.raises(DataError) as exc:
+        module(train)
+    assert f"{path}:1 has no 'split' field" in str(exc.value)
+
+
+def test_a_mixed_file_refuses_even_when_the_bad_line_is_last(tmp_path):
+    """One exam line appended to an otherwise clean train file -- the audit's
+    exact attack -- stops the run and names the line."""
+    train = write_train_dir(tmp_path / "train")
+    path = train / "train_phase_2.jsonl"
+    rec = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    rec.update(prompt_hash="appended-exam", split="exam")
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    with pytest.raises(DataError, match=r"train_phase_2\.jsonl:21 has split 'exam'"):
+        module(train)
+
+
+def test_the_split_check_runs_before_the_pilot_prefix_filter(tmp_path):
+    """--pilot trains on the first N stories only; an exam line after the
+    prefix still means the file is not a training file."""
+    train = write_train_dir(tmp_path / "train")
+    _rewrite_line(train / "train_phase_0.jsonl", 19, lambda rec: rec.__setitem__("split", "exam"))
+    with pytest.raises(DataError, match=r"train_phase_0\.jsonl:20 has split 'exam'"):
+        module(train, stories_per_phase=5)

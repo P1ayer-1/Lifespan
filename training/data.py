@@ -2,9 +2,11 @@
 
 This module only ever sees the training directory. It has no parameter for an
 exam path and `train.py` does not have one to give it (`guard.py` holds that
-line). Its inputs are the frozen contract:
+line). Its inputs are the frozen contract, plus `split`, which the 2026-09-25
+leakage re-audit made required: every line must say `"split": "train"`, and a
+line that says anything else, or nothing, stops the run (`_require_train_split`):
 
-    train_phase_{k}.jsonl   {prompt_hash, phase, tier, story, model, timestamp}
+    train_phase_{k}.jsonl   {prompt_hash, phase, tier, story, model, timestamp, split}
     replay/phase_{k}.json   {seed, prompt_hashes: [500]}   # same file every arm
 
 Packing: each phase's stories are encoded in file order, joined with the
@@ -94,6 +96,33 @@ def _pack(ids: list[int], block_size: int) -> np.ndarray:
     return arr.reshape(n_seq, block_size)
 
 
+#: The only `split` value a line this module trains on may carry.
+TRAIN_SPLIT = "train"
+
+
+def _require_train_split(rec: dict, path: Path, lineno: int) -> None:
+    """Refuse a story line that is not declared `split: "train"`.
+
+    The 2026-09-25 leakage re-audit appended exam-split stories to a train
+    `stories.jsonl` without complaint: the response generator had no split
+    check, and the story lines carried no `split` at all. The generator now
+    writes `split` into every line; this is the training side of the same
+    fix. A missing `split` is refused too -- unrecorded provenance is not
+    provenance, and "probably train" is exactly the default that lets an exam
+    story be trained on without a trace. Raised, never caught, so it fires
+    before a model is built.
+    """
+    split = rec.get("split")
+    if split != TRAIN_SPLIT:
+        what = "has no 'split' field" if "split" not in rec else f"has split {split!r}"
+        raise DataError(
+            f"{path}:{lineno} {what}; only split {TRAIN_SPLIT!r} lines may be trained on. "
+            "A story line that is not declared training data may be an exam story, and "
+            "training on one makes every score on its phase meaningless. Fix the corpus; "
+            "this is not a flag to override."
+        )
+
+
 def pack_phase(
     path: Path,
     phase: int,
@@ -118,6 +147,9 @@ def pack_phase(
             rec = json.loads(line)
             if "story" not in rec:
                 raise DataError(f"{path}:{lineno} has no 'story' field")
+            # Every line, before the pilot/replay filter: one exam line anywhere
+            # in the file means the file is not a training file.
+            _require_train_split(rec, path, lineno)
             ph = rec.get("prompt_hash")
             if keep_hashes is not None:
                 if ph not in keep_hashes:
