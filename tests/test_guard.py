@@ -418,3 +418,41 @@ def test_the_cli_defaults_to_the_run_configs_experiment_id(toy_dirs):
         guard_main(args)
     write_manifest(toy_dirs["manifest"], toy_dirs["exam"], experiment_id=EXPERIMENT_ID)
     assert guard_main(args) == 0
+
+
+@pytest.mark.parametrize("sep", [" ", " ", "\x85", "\x0b", "\x0c", "\x1e"])
+def test_an_exam_line_with_a_unicode_line_separator_in_a_side_field_is_refused(guarded, sep):
+    """Audit re-run 3: str.splitlines() broke the line on U+2028/U+2029/NEL
+    etc., so the guard saw fragments while data.py trained on the whole line."""
+    row = dict(guarded["rows"][0], split="train", note=f"a{sep}b")
+    path = guarded["train"] / "train_phase_2.jsonl"
+    path.write_text(path.read_text(encoding="utf-8") + json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(GuardError, match="exam prompt_hash"):
+        check(guarded["train"], guarded["exam"], guarded["manifest"])
+
+
+def test_an_exam_story_containing_a_paragraph_separator_under_a_new_hash_is_refused(guarded):
+    row = dict(guarded["rows"][1], split="train", prompt_hash="fedcba9876543210")
+    row["story"] = row["story"].replace("\n\n", " ")
+    path = guarded["train"] / "train_phase_2.jsonl"
+    path.write_text(path.read_text(encoding="utf-8") + json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(GuardError, match="an exam story"):
+        check(guarded["train"], guarded["exam"], guarded["manifest"])
+
+
+def test_a_jsonl_line_that_does_not_parse_is_refused(guarded):
+    path = guarded["train"] / "train_phase_2.jsonl"
+    path.write_text(path.read_text(encoding="utf-8") + '{"story": "half a line\n', encoding="utf-8")
+    with pytest.raises(GuardError, match="does not parse"):
+        check(guarded["train"], guarded["exam"], guarded["manifest"])
+
+
+def test_loader_lines_matches_how_the_data_loader_reads_a_file(tmp_path):
+    from training.guard import loader_lines
+
+    text = "a b\r\nc\x85d\re\nf g\x0bh\n"
+    p = tmp_path / "f.jsonl"
+    p.write_bytes(text.encode("utf-8"))
+    with p.open("r", encoding="utf-8") as fh:
+        via_loader = [ln.rstrip("\n") for ln in fh]
+    assert [ln for ln in loader_lines(text) if ln] == via_loader

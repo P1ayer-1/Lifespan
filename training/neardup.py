@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from training.guard import loader_lines
+
 PREFIX_CHARS = 200
 SHINGLE_N = 5
 CONTAINMENT_THRESHOLD = 0.5
@@ -341,7 +343,7 @@ def verbatim_overlap(
 def _read_rows(paths: Iterable[Path]) -> list[dict]:
     rows = []
     for path in paths:
-        for line in path.read_bytes().decode("utf-8").splitlines():
+        for line in loader_lines(path.read_bytes().decode("utf-8")):
             if line.strip():
                 rows.append(json.loads(line))
     return rows

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -129,6 +130,22 @@ def normalise_story(text: str) -> str:
     """NFC, every whitespace run to one space, stripped (module docstring).
     Line endings and indentation therefore never change a story's hash."""
     return " ".join(unicodedata.normalize("NFC", text).split())
+
+
+_LOADER_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def loader_lines(text: str) -> list[str]:
+    """Split `text` exactly where data.py and tokenizer.py split a file.
+
+    They iterate a text-mode file (universal newlines), which breaks only on
+    CRLF, CR and LF. `str.splitlines()` also breaks on U+2028, U+2029, NEL,
+    VT, FF and x1c-x1e, so a guard that used it saw fragments where the
+    loader saw one JSON line, and an exam story carrying one of those
+    characters was checked as loose text and then trained on (leakage audit
+    re-run 3, 2026-09-30). Every line-reading check uses this.
+    """
+    return _LOADER_LINE_BREAK.split(text)
 
 
 def story_sha256(text: str) -> str:
@@ -299,7 +316,8 @@ class _LineChecker:
             except json.JSONDecodeError:
                 pass
         # Every line, parsed as JSON where it parses and as text where not.
-        for n, raw in enumerate(text.splitlines(), start=1):
+        is_jsonl = rel.lower().endswith(".jsonl")
+        for n, raw in enumerate(loader_lines(text), start=1):
             line = raw.strip()
             if not line:
                 continue
@@ -308,6 +326,10 @@ class _LineChecker:
             try:
                 obj: Any = json.loads(line)
             except json.JSONDecodeError:
+                if is_jsonl:
+                    # data.py would fail or read it differently: nothing here is
+                    # checked the way it is trained on, so the file is refused.
+                    self._hit(where, "a .jsonl line that does not parse as one JSON value")
                 obj = line
             self.check_value(where, obj)
             if isinstance(obj, dict) and "story" in obj:
