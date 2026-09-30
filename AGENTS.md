@@ -337,6 +337,15 @@ evaluate_all_detailed(... same ...) -> EvalResult
 #   declared phases) once, right after the guard and before a tokenizer or a
 #   model exists, and records the counts in config.json
 #   "manifest": {"exam_stories_verified": {phase: n}}.
+
+# Continuation distractors on a subset exam (owner, 2026-09-30)
+#   An item always has 4 options (chance 1/4) and 3 distractors, none from the
+#   item's own phase. With >= 3 other exam phases the 3 come from 3 distinct
+#   phases (unchanged; a full 0..6 exam is byte-identical). With fewer (the
+#   0/3/6 pre-pilot) they are spread over the other phases as evenly as
+#   possible -- 2+1 for two, 3 for one -- from different stories where
+#   possible. So distractor_phases may repeat a phase; verify_probes and the
+#   evaluator already allow that.
 ```
 
 ## Waves

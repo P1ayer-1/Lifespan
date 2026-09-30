@@ -32,8 +32,11 @@ How items are made (fixed here, the same for every phase):
 * **continuation** -- a story is split into paragraphs (blank lines; single
   newlines if it has no blank line). A split point i in 1..len-1 is drawn;
   `prefix` is paragraphs[:i] joined and followed by the separator, the answer
-  is paragraph i. Three distractor phases are drawn from the other phases;
-  from each, one non-opening paragraph of one exam story, preferring
+  is paragraph i. Three distractor phases are drawn from the other phases
+  (with fewer than three other phases, as in a 0/3/6 exam, the three are
+  spread over them as evenly as possible, from different stories where
+  possible; owner, 2026-09-30); from each, one non-opening paragraph of one
+  exam story, preferring
   paragraphs whose length is within `LENGTH_BAND` (0.5x-2x) of the answer's,
   so length is not a giveaway. `answer_index` is balanced over the four slots
   (a seeded shuffle of 0,1,2,3,0,1,2,3,...).
@@ -222,6 +225,23 @@ def build_cloze(
 # --------------------------------------------------------------------------- #
 
 
+def _distractor_phases(others: Sequence[int], rng: random.Random) -> list[int]:
+    """The phases the three distractors come from, never the item's own.
+
+    With at least three other phases: three distinct ones, drawn exactly as
+    before (so a full 0..6 exam is byte-identical). With fewer (the 0/3/6
+    pre-pilot; owner, 2026-09-30): the three are spread over the other phases
+    as evenly as possible (2+1 for two, 3 for one) in a seeded order, so the
+    item keeps four options and chance stays 1/4.
+    """
+    if len(others) >= N_DISTRACTORS:
+        return rng.sample(list(others), N_DISTRACTORS)
+    k, extra = divmod(N_DISTRACTORS, len(others))
+    phases = list(others) * k + rng.sample(list(others), extra)
+    rng.shuffle(phases)
+    return phases
+
+
 def build_continuation(
     stories_by_phase: Mapping[int, Sequence[Mapping]],
     seed: int,
@@ -242,10 +262,10 @@ def build_continuation(
     out: dict[int, list[dict]] = {}
     for phase in sorted(stories_by_phase):
         others = [p for p in sorted(pool) if p != phase and pool[p]]
-        if len(others) < N_DISTRACTORS:
+        if not others:
             raise ProbeError(
-                f"phase {phase}: distractors need {N_DISTRACTORS} other phases with multi-paragraph "
-                f"exam stories, found {len(others)}"
+                f"phase {phase}: distractors need at least one other phase with multi-paragraph "
+                f"exam stories, found none"
             )
         rng = derive_rng(seed, "continuation", phase)
         rows = [r for r in _sorted_stories(stories_by_phase[phase]) if len(split_paragraphs(r["story"])[0]) >= 2]
@@ -265,13 +285,17 @@ def build_continuation(
             cut = rng.randrange(1, len(paras))
             prefix = sep.join(paras[:cut]) + sep
             answer = paras[cut]
-            dphases = rng.sample(others, N_DISTRACTORS)
+            dphases = _distractor_phases(others, rng)
             distractors: list[tuple[Mapping, str]] = []
             for dp in dphases:
                 lo, hi = LENGTH_BAND[0] * len(answer), LENGTH_BAND[1] * len(answer)
                 usable = [(r, p) for r, p in pool[dp] if p != answer and all(p != d for _, d in distractors)]
-                banded = [(r, p) for r, p in usable if lo <= len(p) <= hi]
-                choice_from = banded or usable
+                # Two distractors from one phase (a subset exam) come from two
+                # stories where possible; with one per phase this is a no-op.
+                used = {story_id_of(r) for r, _ in distractors}
+                fresh = [(r, p) for r, p in usable if story_id_of(r) not in used] or usable
+                banded = [(r, p) for r, p in fresh if lo <= len(p) <= hi]
+                choice_from = banded or fresh
                 if not choice_from:
                     raise ProbeError(f"phase {phase}: no distractor paragraph left in phase {dp}")
                 distractors.append(choice_from[rng.randrange(len(choice_from))])

@@ -266,9 +266,43 @@ def test_a_lexicon_under_twenty_words_is_refused():
         build_cloze(stories(2, 1), {0: lexicon(0)[:19]}, SEED)
 
 
-def test_continuation_needs_three_other_phases():
-    with pytest.raises(ProbeError, match="3 other phases"):
-        build_continuation(stories(3, 3), SEED)
+def test_continuation_needs_at_least_one_other_phase():
+    with pytest.raises(ProbeError, match="at least one other phase"):
+        build_continuation(stories(3, 1), SEED)
+
+
+def _subset(phases: tuple[int, ...], n: int = 10) -> dict[int, list[dict]]:
+    full = stories(n, max(phases) + 1)
+    return {k: full[k] for k in phases}
+
+
+def test_a_three_phase_exam_spreads_three_distractors_over_the_two_other_phases():
+    """The 0/3/6 pre-pilot (owner, 2026-09-30): four options, 2+1 over the
+    other two phases, never the item's own phase, different stories where
+    possible, and verify_probes accepts it."""
+    s = _subset((0, 3, 6))
+    cont = build_continuation(s, SEED)
+    for phase, items in cont.items():
+        assert items
+        for item in items:
+            assert len(item["options"]) == 4 and len(set(item["options"])) == 4
+            dp = item["distractor_phases"]
+            assert len(dp) == 3 and phase not in dp
+            assert sorted(Counter(dp).values()) == [1, 2]
+            dist = [src for i, src in enumerate(item["option_sources"]) if i != item["answer_index"]]
+            assert len({src["story_id"] for src in dist}) == 3
+    lex = {k: lexicon(k) for k in s}
+    verify_probes(build_cloze(s, lex, SEED), cont, exam_story_phases=manifest_map(s), train_story_hashes=set())
+
+
+def test_a_two_phase_exam_takes_all_three_distractors_from_the_other_phase():
+    for item in build_continuation(_subset((0, 6)), SEED)[0]:
+        assert item["distractor_phases"] == [6, 6, 6]
+
+
+def test_a_subset_exam_is_deterministic():
+    s = _subset((0, 3, 6))
+    assert build_continuation(s, SEED) == build_continuation(s, SEED)
 
 
 def test_a_story_filed_under_the_wrong_phase_is_refused():
