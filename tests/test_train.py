@@ -1104,3 +1104,20 @@ def test_a_subset_run_verifies_only_its_declared_exam_phases(subset_dirs):
     (subset_dirs["exam"] / "stories" / "exam_phase_3.jsonl").unlink()
     with pytest.raises(ExamManifestMismatch, match="exam stories for phase 3 are missing"):
         run(subset_args(subset_dirs, "E", out=subset_dirs["results"] / "again"), **HOOKS)
+
+
+@pytest.mark.parametrize("subset", [True, False])
+def test_the_tokenizer_is_given_the_declared_phases_only_in_subset_mode(toy_dirs, monkeypatch, subset):
+    from training import train as train_mod
+
+    seen: list = []
+    real = train_mod.get_or_train_tokenizer
+
+    def spy(*a, **k):
+        seen.append(k.get("phases"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(train_mod, "get_or_train_tokenizer", spy)
+    args = subset_args(toy_dirs, "E") if subset else toy_args(toy_dirs, "E")
+    run(args, **HOOKS)
+    assert seen == [(0, 3, 6) if subset else None]

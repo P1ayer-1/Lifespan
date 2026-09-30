@@ -449,6 +449,9 @@ def run(
         settings.model_cfg.vocab_size,
         shared_dir / "tokenizer.json",
         corpus_hash=guard_report.data_hash,
+        # A subset run's BPE sees the declared phases' files only, the ones
+        # DataModule trains on; a full run passes None and is unchanged.
+        phases=settings.phases if settings.subset else None,
     )
     data = DataModule(
         args.train_dir,
