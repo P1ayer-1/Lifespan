@@ -646,3 +646,80 @@ hashes / one model / LF. curriculum-learning `test_generate_responses.py`
   strings that a 200-character opening check cannot see, so exam-keeper
   reports verbatim n-gram overlap with training per phase, and checks it is
   comparable between tier 0's bank and the phase 3/6 banks.
+
+## 2026-09-29 — phase 3 and 6 activity fact banks verified and merged
+
+- **Phase 3 and 6 per-activity banks are merged: phase 3 keeps 1,384 of
+  1,620 facts (66/66 activities), phase 6 keeps 790 of 936 (55/55); no
+  activity under 6 facts** (curriculum-learning f3d9015). Verdicts from 22
+  independent Opus fact-bank-verifier agents, one per writer part; only
+  "true" ships, as for phase 0.
+- **First-pass verdicts were not trusted as sourced, and every part was
+  re-checked.** Measurement: on re-questioning, verifiers reported that
+  most passes naming a person, date, number or quotation had been judged
+  from memory, including many reasons labelled "checked:" (e.g. phase 3
+  part 1: 109 of 111 passes; phase 6 part 5: all 108). The spec says a
+  fact that cannot be confirmed fails, so each part was sent back to fetch
+  a source for every such pass. The re-check moved 1,438 -> 1,384 (phase 3)
+  and 835 -> 790 (phase 6), 99 facts in all, mostly on rule 2
+  (unconfirmed or misworded). Phase 6 part 5 alone fell 108 -> 82.
+  Some fails are "unconfirmed with the pages reachable", not "known false":
+  the session's 200-call WebSearch limit ran out and later checks used
+  WebFetch only, with several government pages blocked (403/404). So the
+  banks err toward dropping true facts, which is the safe direction.
+  Future verifier runs: require a fetched source in the reason for every
+  pass with a specific claim, not a "checked:" label, and budget web
+  search across parts.
+- The brief's domain-bank path `config/facts/phase_{3,6}.json` does not
+  exist in curriculum-learning; verifiers de-duplicated against
+  `tools/prompt_lab/facts/phase_{3,6}.json` and
+  `src/lifespan_learning/dataset_generation/prompt/config/facts/`. Fix the
+  path in the agent brief.
+- Kept passes worth a human look: phase 3 part 0 fact 2 (Rogers and
+  Farson 1957, sourced only to a bookseller listing); phase 6 part 4 facts
+  66 (Ontario rent deposit, landlord-blog source) and 67 (England deposit
+  caps, stated before the 1 May 2026 tenancy change). One likely wrongful
+  fail: phase 3 part 10 fact 83 ("Hakon" vs "Håkon").
+- **Installed and measured (2026-09-30): an injected verified fact now
+  reaches 1,000 of 1,000 phase-3 and 1,000 of 1,000 phase-6 pre-pilot train
+  prompts, against 17 and 59 before** (curriculum-learning fbfaf69; same
+  seed 42, tiers and paths as ce15c91). Every fact comes from the activity
+  bank; 877 and 741 distinct facts used, none more than 3 times. The only
+  other metadata change is `domain` on the prompts that had drawn a
+  domain-level fact. All prompt hashes changed; no phase 3/6 stories or
+  exams existed, so nothing downstream is invalidated. Story generation is
+  no longer blocked on facts.
+- **Facts must match the prompt's goal, not only its activity
+  (2026-09-30, curriculum-learning a7e2d46).** Measurement: phases 3 and 6
+  split one content_key into several goals (learning_math: fractions,
+  congruent triangles), but the merged bank kept only content_key, so
+  380/1000 phase-3 and 280/1000 phase-6 prompts got a fact written for a
+  sibling goal. The seeded 200-story review (07c981c) traced phase-3
+  failures to it: either gate failed on 34.9% of mismatched prompts vs
+  17.5% of matched ones (phase 6: 20.3% vs 18.4%). Fix: merge tags each
+  fact with its row's activity; FactBank serves a goal only its own facts.
+  Tier 0 prompts regenerate byte-identical. 466 + 484 prompts changed;
+  their stories were archived and regenerated.
+- **Full review of all 2,000 phase 3/6 stories, not the planned 200-story
+  sample** (owner, 2026-09-30). Every story through both Opus gates
+  (sample, wave 1 26c399a, wave 2 37633c6 / 881280f). Before
+  regeneration, pass both: phase 3 811/1000, phase 6 822/1000. Goal-matched
+  facts lifted phase-3 age fit (91.8% -> 94.8%) but not fact accuracy
+  (~85% both), because fact fails are the generator's own added claims,
+  not the injected fact, which was stated correctly almost everywhere.
+- **Two regeneration rounds, then drop** (tier 0 rule; 865e660, 719300a).
+  Round 1: 250/374 now pass both; round 2: 72/125. Final pre-pilot train
+  corpus: **phase 3 972/1000, phase 6 974/1000**, every story passing both
+  gates on its latest version; the 54 drops are in train/dropped.jsonl.
+  Drops cluster where the generator must get exact technical detail right
+  (coding and JUnit behaviour, Canadian/US payroll tax, stoichiometry,
+  codon tables, bar-level Mozart analysis). Generation cost about $3 in all.
+- Reviewers pass some real problems; seven stories were queued by hand
+  (uncorrected unsafe acts, stray CJK/Cyrillic characters from the
+  generator, an invented book quote). One (a grease-fire lid lifted again)
+  was passed by both reviewers in all three versions and dropped by hand.
+  A stray-script scan now runs on every generated batch.
+- Open, before the main run: side-character names repeat heavily ("Priya"
+  in up to half of a phase-6 part); the template fixes only the main
+  character's name. A fix changes every prompt hash, so it belongs with
+  the next template change, not mid-pilot.
