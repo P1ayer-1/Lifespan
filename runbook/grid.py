@@ -170,6 +170,7 @@ def build_train_argv(
     manifest: Path | None,
     toy: bool,
     cpu: bool,
+    experiment_id: str | None = None,
 ) -> list[str]:
     argv = [
         sys.executable,
@@ -190,6 +191,9 @@ def build_train_argv(
     ]
     if manifest is not None:
         argv += ["--manifest", str(manifest)]
+    if experiment_id is not None:
+        # Omitted, train.py uses training.config.EXPERIMENT_ID -- the grid's.
+        argv += ["--experiment-id", experiment_id]
     if resume:
         argv.append("--resume")
     if toy:
@@ -213,6 +217,7 @@ def run_grid(
     cpu: bool = False,
     dry_run: bool = False,
     log=print,
+    experiment_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Runs (or dry-runs) the 21 invocations in order. Returns one report dict
     per invocation: {arm, seed, action: skip|run, status, run_dir}.
@@ -261,6 +266,7 @@ def run_grid(
             manifest=manifest,
             toy=toy,
             cpu=cpu,
+            experiment_id=experiment_id,
         )
 
         if dry_run:
@@ -308,6 +314,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--train-dir", type=Path, required=True)
     p.add_argument("--exam-dir", type=Path, required=True)
     p.add_argument("--manifest", type=Path, default=None)
+    p.add_argument(
+        "--experiment-id",
+        default=None,
+        help="passed to training.train; omitted, it uses training.config.EXPERIMENT_ID",
+    )
     p.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
     p.add_argument("--phase0-dir", type=Path, default=None)
     p.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
@@ -326,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         results_root=args.results_root,
         phase0_dir=args.phase0_dir,
         manifest=args.manifest,
+        experiment_id=args.experiment_id,
         state_path=args.state_path,
         ledger_path=args.ledger_path,
         toy=args.toy,

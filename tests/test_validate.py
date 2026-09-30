@@ -387,3 +387,88 @@ def test_main_with_no_args_scans_results_root(tmp_path, capsys):
     out = capsys.readouterr().out
     assert good.name in out
     assert bad_dir.name in out
+
+
+# ---------------------------------------------------------------------------
+# subset runs (train.py --phases 0,3,6): config.json "phases", real ids
+
+SUBSET = [0, 3, 6]
+NAN = float("nan")
+
+
+def _subset_matrix(phases=SUBSET) -> dict:
+    """What train.py writes for a 0/3/6 run: undeclared rows null, undeclared
+    exam columns NaN (json writes the NaN literal), untrained likewise."""
+    m = _matrix()
+    for t in EXAM_TYPES:
+        m["untrained"][t] = [v if j in phases else NAN for j, v in enumerate(m["untrained"][t])]
+        m["M"][t] = [
+            [v if j in phases else NAN for j, v in enumerate(row)] if i in phases else [None] * N_PHASES
+            for i, row in enumerate(m["M"][t])
+        ]
+    return m
+
+
+def make_subset_folder(tmp_path: Path, *, arm: str = GOOD_ARM, phases=SUBSET) -> Path:
+    run_dir = make_good_folder(tmp_path, name=f"{arm}_s{GOOD_SEED}_{GOOD_COMMIT7}_{GOOD_UTC}")
+    (run_dir / "matrix.json").write_text(json.dumps(_subset_matrix()), encoding="utf-8")
+    (run_dir / "config.json").write_text(
+        json.dumps(_config(arm=arm, phases=phases, subset_phases=True)), encoding="utf-8"
+    )
+    return run_dir
+
+
+def test_a_subset_run_with_null_rows_and_nan_columns_is_valid(tmp_path):
+    assert validate(make_subset_folder(tmp_path)) == []
+
+
+def test_a_subset_run_missing_a_declared_cell_fails(tmp_path):
+    run_dir = make_subset_folder(tmp_path)
+    m = _subset_matrix()
+    m["M"]["cloze"][3][6] = None
+    m["untrained"]["perplexity"][3] = NAN
+    (run_dir / "matrix.json").write_text(json.dumps(m), encoding="utf-8")
+    failures = validate(run_dir)
+    assert any("M['cloze'][3]" in f and "[6]" in f for f in failures)
+    assert any("untrained['perplexity']" in f and "[3]" in f for f in failures)
+
+
+def test_a_subset_run_missing_a_whole_declared_row_fails(tmp_path):
+    run_dir = make_subset_folder(tmp_path)
+    m = _subset_matrix()
+    m["M"]["continuation"][6] = [None] * N_PHASES
+    (run_dir / "matrix.json").write_text(json.dumps(m), encoding="utf-8")
+    assert any("M['continuation'][6]" in f for f in validate(run_dir))
+
+
+def test_the_same_partial_matrix_without_a_phases_declaration_is_incomplete(tmp_path):
+    """A full run is checked exactly as before: null rows mean a dead session."""
+    run_dir = make_good_folder(tmp_path)
+    (run_dir / "matrix.json").write_text(json.dumps(_subset_matrix()), encoding="utf-8")
+    failures = validate(run_dir)
+    assert any("non-finite" in f for f in failures)
+
+
+def test_a_full_run_that_declares_all_seven_is_checked_as_a_full_run(tmp_path):
+    run_dir = make_good_folder(tmp_path)
+    (run_dir / "config.json").write_text(json.dumps(_config(phases=list(range(N_PHASES)))), encoding="utf-8")
+    assert validate(run_dir) == []
+    (run_dir / "matrix.json").write_text(json.dumps(_subset_matrix()), encoding="utf-8")
+    assert any("non-finite" in f for f in validate(run_dir))
+
+
+@pytest.mark.parametrize("bad", [[3, 6], [0, 6, 3], [0, 3, 3], [0, 7], [], "0,3,6", [0, True]])
+def test_an_invalid_phases_declaration_fails(tmp_path, bad):
+    run_dir = make_good_folder(tmp_path)
+    (run_dir / "config.json").write_text(json.dumps(_config(phases=bad)), encoding="utf-8")
+    assert any("'phases'" in f for f in validate(run_dir))
+
+
+def test_a_subset_phase0_run_needs_row_zero_on_declared_columns_only(tmp_path):
+    run_dir = make_subset_folder(tmp_path, arm="phase0")
+    m = _subset_matrix()
+    for t in EXAM_TYPES:
+        for i in (3, 6):
+            m["M"][t][i] = [None] * N_PHASES
+    (run_dir / "matrix.json").write_text(json.dumps(m), encoding="utf-8")
+    assert validate(run_dir) == []

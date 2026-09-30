@@ -34,6 +34,14 @@ frozen versions; those win).
   Seeded. Same exam stories and seed, same probes, byte for byte.
 - **`exams/manifest.json`** in the Lifespan repo: SHA-256 of every exam file,
   generator commit, seed, config hashes, near-duplicate counts. Hashes only.
+  Since 2026-09-30 (AGENTS.md, Amendment 3) it also carries, and the guard
+  refuses a manifest without them: `experiment_id` (non-empty; the main
+  experiment's is `training.config.EXPERIMENT_ID`, `"lifespan-main"`),
+  top-level `generator_model`, and `stories: [{story_id, prompt_hash,
+  story_sha256, phase}]`, one per exam story, with `story_sha256` from
+  `training.guard.story_sha256` (NFC, whitespace runs collapsed, stripped).
+  Build the entries with `training.guard.manifest_story_entry`; the evaluator
+  refuses an exam whose stories on disk differ from them.
 - **The replay buffer selection**: 500 training `prompt_hash`es per phase,
   chosen once with a recorded seed, the same file for every arm and seed.
 
@@ -66,7 +74,9 @@ frozen versions; those win).
 - Start a real exam generation run without the lead's go-ahead: it spends the
   generation budget. Exam stories come from the same model id as the training
   stories; check the `model` field agrees before building probes, and record it
-  in the manifest's `config_hashes`.
+  as the manifest's top-level `generator_model` (not in `config_hashes`:
+  `training/guard.py` reads the top-level key and refuses a training corpus
+  whose model differs from it).
 - Choose replay stories, distractors or masks by looking at any model's scores.
 
 ## What you return

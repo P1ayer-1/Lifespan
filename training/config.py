@@ -14,6 +14,16 @@ EXAM_TYPES: tuple[str, ...] = ("perplexity", "cloze", "continuation")
 N_PHASES = 7
 SEEDS = (0, 1, 2)
 
+#: The experiment a run belongs to, checked against the exam manifest's
+#: `experiment_id` by `guard.check` before anything else happens (leakage
+#: re-audit 2026-09-25: "recorded but never checked"; wired 2026-09-30). This
+#: is the main experiment's id: the pilot and the grid share one exam freeze,
+#: so exam-keeper writes exactly this string into `exams/manifest.json`. A
+#: throwaway experiment with its own manifest (the pre-pilot) passes its own id
+#: with `train.py --experiment-id`. There is no way to run without an id: the
+#: guard refuses a missing or blank one.
+EXPERIMENT_ID = "lifespan-main"
+
 #: The phases a full run trains, in order. Also the default phase list.
 ALL_PHASES: tuple[int, ...] = tuple(range(N_PHASES))
 

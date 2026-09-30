@@ -254,6 +254,91 @@ continuation: {id, phase, prefix, options: [4 paragraphs], answer_index,
 # repo by design; this makes the wrong `git add` impossible, not just unlikely.)
 ```
 
+### Amendment 3 — recorded 2026-09-30, from the leakage audit re-run of 2026-09-25
+
+Additions only: nothing above is renamed or removed, and the frozen text of
+2026-09-21 and 2026-09-22 stands as history. These are what the code on
+`master` (audit-data-split, audit-guard, audit-wiring) already enforces;
+recorded here so every holder of a contract sees them in one place. See
+`docs/DECISIONS.md`, 2026-09-25, for the findings.
+
+```text
+# Training story line — `split` is REQUIRED (blocking finding 1)
+{prompt_hash, phase, tier, story, model, timestamp, split}
+#   split == "train" on every line of every train_phase_{k}.jsonl. A missing
+#   split, or any other value, is refused with file:line -- by data.py (every
+#   line, before the pilot/replay filter) and by tokenizer.py (every line the
+#   BPE is trained on). Not a flag; there is no override.
+
+# exams/manifest.json — three top-level additions (blocking findings 2 and 3)
+{experiment_id, frozen_at, generator_commit, seed, config_hashes: {...},
+ files: [...], near_duplicates_dropped: {...},                  # as frozen
+ generator_model: "<model id>",                                  # NEW, required
+ stories: [{story_id, prompt_hash, story_sha256, phase}]}        # NEW, required, one per exam story
+#   experiment_id: REQUIRED, a non-empty string (was recorded, never checked).
+#   generator_model: the exam stories' generator; the guard requires every
+#     training story line's `model` to be one value equal to it.
+#   stories: the guard checks EVERY training line against it -- any string equal
+#     to an exam prompt_hash, or whose normalised hash is an exam story_sha256,
+#     is a leak -- so a CRLF copy or exam lines mixed into a train file are
+#     refused, not only a byte-identical file.
+#   story_id: the exam line's `id`, else its prompt_hash (guard.manifest_story_entry).
+
+# The story hash — one definition, imported from training.guard by every
+# producer and consumer (guard, probe builder, near-dup check, evaluator)
+story_sha256(text) = sha256(normalise_story(text).encode("utf-8")).hexdigest()
+normalise_story(text): Unicode NFC; every run of whitespace (space, tab, CR, LF,
+  CRLF, NBSP, ...) becomes one ASCII space; leading/trailing whitespace stripped.
+  Case and punctuation are kept.
+#   option_sources[*].story_sha256 (amendment 2) is this hash of the source story.
+
+# Probe items — cloze gains two OPTIONAL fields (the evaluator ignores them)
+cloze: {id, phase, text_with_mask, answer, candidates: [20],
+        story_id, story_sha256}                                  # NEW, optional: the masked story
+
+# experiment_id at run time — REQUIRED, never skipped
+#   training.config.EXPERIMENT_ID = "lifespan-main" is the main experiment's id:
+#   the pilot and the grid share one exam freeze, so exam-keeper writes exactly
+#   this string into exams/manifest.json. guard.check(..., experiment_id=...)
+#   refuses a mismatch AND a missing/blank id. The frozen command line is
+#   unchanged: it takes the config's id.
+
+# Entry point — additive flags; the frozen command above is unchanged and valid
+python -m training.train ... [--manifest <path>] [--phases 0,3,6] [--experiment-id <id>]
+#   --manifest       exam manifest path (default exams/manifest.json).
+#   --phases         subset-phase mode: the phases this run trains, comma-separated,
+#                    strictly ascending, 0 included, ints in 0..6. Phases keep their
+#                    REAL ids everywhere -- matrix rows, exam columns, replay pools,
+#                    checkpoints, timings, config.json -- and are never renumbered
+#                    (a 0/3/6 run closes phases 3 and 6 as 3 and 6). Undeclared
+#                    phases need no training file and are never read (data.py,
+#                    tokenizer.py). matrix.json stays 7x7: undeclared rows null,
+#                    undeclared exam columns NaN. config.json records
+#                    "phases": [...] and "subset_phases": bool for every run.
+#                    metrics.py, report.py and results/validate.py read
+#                    config["phases"] (absent = all seven) and compute over the
+#                    declared phases only; a full 0..6 run behaves as before.
+#   --experiment-id  default training.config.EXPERIMENT_ID; only a throwaway
+#                    experiment with its own --manifest (the pre-pilot) passes
+#                    another.
+
+# evaluate_all gains one more keyword-only parameter (amendments 2026-09-22 extended)
+evaluate_all(model, exam_dir, phases, *, tokenizer=None, cfg=None, story_hashes=None)
+evaluate_all_detailed(... same ...) -> EvalResult
+#   story_hashes: {normalised story_sha256: phase}, the manifest's (train.py
+#   passes guard_report.exam_story_phases). Every continuation option_sources
+#   hash must be in it with its phase, and each scored phase's
+#   stories/exam_phase_{k}.jsonl must hold exactly the manifest's stories of
+#   phase k (none missing, extra, duplicated or misfiled) -- else
+#   evaluate.ExamManifestMismatch before anything is scored. Without it the map
+#   is derived from the exam stories on disk (option_sources still checked).
+#   The 3-positional frozen call still works.
+#   train.py also runs evaluate.verify_exam_stories(exam_dir, story_hashes,
+#   declared phases) once, right after the guard and before a tokenizer or a
+#   model exists, and records the counts in config.json
+#   "manifest": {"exam_stories_verified": {phase: n}}.
+```
+
 ## Waves
 
 Follow `PLAN.md`'s schedule; a wave is green when its gate is answered in

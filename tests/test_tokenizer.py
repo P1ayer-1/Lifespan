@@ -126,3 +126,97 @@ def test_a_cache_with_no_corpus_record_is_refused(toy_dirs, tmp_path):
     corpus_meta_path(cache).unlink()
     with pytest.raises(ValueError, match="cannot be established"):
         get_or_train_tokenizer(toy_dirs["train"], 400, cache, corpus_hash="a" * 64)
+
+
+# ---------------------------------------------------------------------------
+# the split check (leakage re-audit 2026-09-25): the tokenizer reads every
+# line data.py reads, and refuses the same lines
+
+
+def _rewrite_line(path: Path, index: int, **changes) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    rec = json.loads(lines[index])
+    for k, v in changes.items():
+        if v is None:
+            rec.pop(k, None)
+        else:
+            rec[k] = v
+    lines[index] = json.dumps(rec)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("split,match", [("exam", "has split 'exam'"), (None, "has no 'split' field")])
+def test_the_tokenizer_refuses_a_line_that_is_not_declared_train(toy_dirs, tmp_path, split, match):
+    """An exam story appended to a train file must not shape the vocabulary:
+    the same refusal, by the same function, as the data loader's."""
+    from training.data import DataError
+
+    path = Path(toy_dirs["train"]) / "train_phase_5.jsonl"
+    _rewrite_line(path, 13, split=split)
+    with pytest.raises(DataError, match=r"train_phase_5\.jsonl:14 " + match):
+        list(iter_corpus(toy_dirs["train"]))
+    with pytest.raises(DataError, match=match):
+        get_or_train_tokenizer(toy_dirs["train"], 400, tmp_path / "tok.json")
+    assert not (tmp_path / "tok.json").exists(), "a tokenizer was written from a refused corpus"
+
+
+def test_the_split_check_covers_every_line_not_only_the_first(toy_dirs):
+    from training.data import DataError
+
+    path = Path(toy_dirs["train"]) / "train_phase_0.jsonl"
+    last = len(path.read_text(encoding="utf-8").splitlines()) - 1
+    _rewrite_line(path, last, split="exam")
+    with pytest.raises(DataError, match=rf":{last + 1} has split 'exam'"):
+        list(iter_stories(path))
+
+
+# ---------------------------------------------------------------------------
+# subset mode: the BPE trains on the declared phases' files only
+
+
+def test_subset_corpus_is_the_declared_phases_only(toy_dirs):
+    files = corpus_files(toy_dirs["train"], (0, 3, 6))
+    assert [f.name for f in files] == ["train_phase_0.jsonl", "train_phase_3.jsonl", "train_phase_6.jsonl"]
+    stories = list(iter_corpus(toy_dirs["train"], (0, 3, 6)))
+    assert len(stories) == 3 * 20
+    # phase k's stories are written in letter 'a'+k only (conftest)
+    letters = {c for s in stories for c in s if c.isalpha()}
+    assert letters == {"a", "d", "g"}
+
+
+def test_an_undeclared_phase_is_never_read_even_if_it_is_broken(toy_dirs):
+    """A 0/3/6 run must not care what else sits in the directory: phase 1's
+    file with an exam line in it is ignored, exactly as DataModule ignores it."""
+    _rewrite_line(Path(toy_dirs["train"]) / "train_phase_1.jsonl", 0, split="exam")
+    assert len(list(iter_corpus(toy_dirs["train"], (0, 3, 6)))) == 3 * 20
+
+
+def test_a_declared_phase_without_a_file_is_refused(tmp_path):
+    from tests.conftest import write_train_dir
+
+    train = write_train_dir(tmp_path / "train", phases=(0, 6))
+    with pytest.raises(FileNotFoundError, match="declared phase 3"):
+        corpus_files(train, (0, 3, 6))
+    with pytest.raises(ValueError):
+        corpus_files(train, (3, 6))  # phase 0 is required, as config.resolve_phases says
+
+
+def test_a_subset_bpe_is_fitted_to_the_declared_phases_and_cached_separately(toy_dirs, tmp_path):
+    cache = tmp_path / "tok.json"
+    sub = get_or_train_tokenizer(toy_dirs["train"], 400, cache, corpus_hash="a" * 64, phases=(0, 3, 6))
+    assert json.loads(corpus_meta_path(cache).read_text(encoding="utf-8")) == {
+        "corpus_hash": "a" * 64,
+        "phases": [0, 3, 6],
+    }
+    # merges exist for declared letters; no merge was learned for an undeclared one
+    assert len(sub.encode("bbbbbb")) == 6
+    assert len(sub.encode("dddddd")) < 6
+    # the same subset reuses the cache; a full run from the same dir does not
+    get_or_train_tokenizer(toy_dirs["train"], 400, cache, corpus_hash="a" * 64, phases=(0, 3, 6))
+    with pytest.raises(ValueError, match="trained on phases \\[0, 3, 6\\] of this corpus, this run declares all phases"):
+        get_or_train_tokenizer(toy_dirs["train"], 400, cache, corpus_hash="a" * 64)
+    full_cache = tmp_path / "full.json"
+    get_or_train_tokenizer(toy_dirs["train"], 400, full_cache, corpus_hash="a" * 64)
+    assert json.loads(corpus_meta_path(full_cache).read_text(encoding="utf-8")) == {"corpus_hash": "a" * 64}
+    with pytest.raises(ValueError, match="trained on all phases of this corpus, this run declares phases"):
+        get_or_train_tokenizer(toy_dirs["train"], 400, full_cache, corpus_hash="a" * 64, phases=(0, 3, 6))

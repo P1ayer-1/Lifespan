@@ -100,12 +100,19 @@ def write_train_dir(
 
 
 def write_exam_dir(root: Path) -> Path:
-    """A placeholder exam directory. Nothing in the test suite reads it; it
-    exists so the guard has a real path to refuse to overlap with."""
+    """A placeholder exam directory: one invented story per phase, never scored.
+
+    It exists so the guard has a real path to refuse to overlap with, and --
+    since 2026-09-30, when `train.py` confirms the exam stories on disk against
+    the manifest's per-story hashes before anything is built -- so a run with a
+    stubbed scorer still has an exam that matches its manifest
+    (`write_manifest` derives the per-story entries from these lines). The text
+    is synthetic and shares nothing with the training fixture.
+    """
     (root / "stories").mkdir(parents=True, exist_ok=True)
-    (root / "stories" / "exam_phase_0.jsonl").write_text(
-        json.dumps({"id": "placeholder", "note": "not read by any test"}) + "\n", encoding="utf-8"
-    )
+    for k in range(N_PHASES):
+        row = {"id": f"placeholder_{k}", "phase": k, "story": f"placeholder exam story {k}, never scored."}
+        (root / "stories" / f"exam_phase_{k}.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
     return root
 
 
@@ -345,6 +352,8 @@ def toy_args(dirs: dict, arm: str, seed: int = 0, out: Path | None = None, resum
         phase0_dir=dirs["shared"],
         toy=True,
         cpu=True,
+        # write_manifest's default id; the guard refuses a missing one
+        experiment_id="toy",
     )
 
 

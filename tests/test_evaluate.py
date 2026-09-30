@@ -416,6 +416,123 @@ def test_an_exam_dir_without_stories_cannot_vouch_for_option_sources(tmp_path):
         exam_story_phases(tmp_path)
 
 
+# --------------------------------------------------------------------------- #
+# the exam on disk is the manifest's (2026-09-30): verify_exam_stories and
+# the same check inside evaluate_all when story_hashes is given
+# --------------------------------------------------------------------------- #
+
+
+def _manifest_map(exam_dir: Path) -> dict[str, int]:
+    """What the guard report hands over: normalised hash -> phase, computed
+    here the manifest's way (conftest.manifest_stories_of)."""
+    from tests.conftest import manifest_stories_of
+
+    return {e["story_sha256"]: e["phase"] for e in manifest_stories_of(exam_dir)}
+
+
+def test_an_exam_matching_the_manifest_verifies_and_scores(tmp_path):
+    from training.evaluate import verify_exam_stories
+
+    exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=2, n_probes=2)
+    frozen = _manifest_map(exam_dir)
+    assert verify_exam_stories(exam_dir, frozen, range(N_PHASES)) == {k: 2 for k in range(N_PHASES)}
+    evaluate_all(TinyBigramLM(), exam_dir, [0, 3], tokenizer=TOK, cfg=CFG, story_hashes=frozen)
+
+
+def test_a_crlf_or_reindented_copy_still_matches(tmp_path):
+    """The manifest hash is of the normalised story, so line endings on the
+    Kaggle side cannot turn a frozen exam into a mismatch."""
+    from training.evaluate import verify_exam_stories
+
+    exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=2, n_probes=2)
+    frozen = _manifest_map(exam_dir)
+    path = exam_dir / "stories" / "exam_phase_2.jsonl"
+    rows = load_jsonl(path)
+    for r in rows:
+        r["story"] = "  " + r["story"].replace("\n", "\r\n") + "\t"
+    _write_jsonl(path, rows)
+    assert verify_exam_stories(exam_dir, frozen, [2]) == {2: 2}
+
+
+@pytest.mark.parametrize(
+    "tamper,match",
+    [
+        ("edit", "is not in the manifest"),
+        ("drop", "exam stories in the manifest are not on disk"),
+        ("extra", "is not in the manifest"),
+        ("duplicate", "are the same story"),
+        ("wrong_phase_field", "says phase 5 but sits in the phase-1 file"),
+        ("moved", "is a phase-2 exam story in the manifest, not phase 1"),
+        ("no_story", "has no 'story' field"),
+        ("missing_file", "exam stories for phase 1 are missing"),
+    ],
+)
+def test_an_exam_that_differs_from_the_manifest_is_refused_before_scoring(tmp_path, tamper, match):
+    from training.evaluate import ExamManifestMismatch, verify_exam_stories
+
+    exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=3, n_probes=2)
+    frozen = _manifest_map(exam_dir)
+    path = exam_dir / "stories" / "exam_phase_1.jsonl"
+    rows = load_jsonl(path)
+    if tamper == "edit":
+        rows[1]["story"] = rows[1]["story"] + " one edited word"
+    elif tamper == "drop":
+        rows = rows[:-1]
+    elif tamper == "extra":
+        rows.append({"id": "planted", "phase": 1, "story": "a story nobody froze."})
+    elif tamper == "duplicate":
+        rows.append(dict(rows[0], id="copy"))
+    elif tamper == "wrong_phase_field":
+        rows[0]["phase"] = 5
+    elif tamper == "moved":
+        rows[0] = dict(load_jsonl(exam_dir / "stories" / "exam_phase_2.jsonl")[0], phase=1)
+    elif tamper == "no_story":
+        del rows[0]["story"]
+    if tamper == "missing_file":
+        path.unlink()
+    else:
+        _write_jsonl(path, rows)
+
+    with pytest.raises(ExamManifestMismatch, match=match):
+        verify_exam_stories(exam_dir, frozen, range(N_PHASES))
+    scored: list = []
+
+    class Spy(TinyBigramLM):
+        def forward(self, *a, **k):
+            scored.append(1)
+            return super().forward(*a, **k)
+
+    with pytest.raises(ExamManifestMismatch if tamper != "missing_file" else (ExamManifestMismatch, OSError)):
+        evaluate_all(Spy(), exam_dir, [0, 1], tokenizer=TOK, cfg=CFG, story_hashes=frozen)
+    assert scored == [], "a phase was scored before the mismatch was refused"
+    # an unscored phase's file is not the evaluator's business in this call
+    verify_exam_stories(exam_dir, frozen, [0, 2])
+
+
+def test_mismatch_messages_carry_hashes_and_ids_never_exam_text(tmp_path):
+    from training.evaluate import ExamManifestMismatch, verify_exam_stories
+
+    exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=2, n_probes=2)
+    frozen = _manifest_map(exam_dir)
+    path = exam_dir / "stories" / "exam_phase_0.jsonl"
+    rows = load_jsonl(path)
+    rows[0]["story"] = "SECRETEXAMTEXT " + rows[0]["story"]
+    _write_jsonl(path, rows)
+    with pytest.raises(ExamManifestMismatch) as info:
+        verify_exam_stories(exam_dir, frozen, [0])
+    assert "SECRETEXAMTEXT" not in str(info.value)
+
+
+def test_an_empty_manifest_map_is_refused_not_treated_as_no_check(tmp_path):
+    from training.evaluate import ExamManifestMismatch, verify_exam_stories
+
+    exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=1, n_probes=1)
+    with pytest.raises(ExamManifestMismatch, match="empty"):
+        verify_exam_stories(exam_dir, {}, [0])
+    with pytest.raises(ExamManifestMismatch, match="empty"):
+        evaluate_all(TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG, story_hashes={})
+
+
 def test_answer_index_is_bounds_checked():
     model = ConstantLogitsLM(make_pref())
     for bad in (4, -1, 99):

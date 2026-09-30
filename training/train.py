@@ -3,6 +3,10 @@
     python -m training.train --arm {phase0,A,B,C,D,D-nr,E} --seed {0,1,2}
         --train-dir <dir> --exam-dir <dir> --out results/<run_id> [--resume] [--pilot]
 
+Additive flags (none changes a hyperparameter): `--manifest`, `--phases`
+(subset-phase mode), `--experiment-id` (default `config.EXPERIMENT_ID`; the
+guard refuses a run whose id is not the manifest's, and a missing one).
+
 `--arm` selects a row of `training.config.ARMS` and nothing else in this file
 branches on an arm's name. What a row can say is: how much replay (`A` 0.0 vs
 `B` 0.3), whether it trains LoRA, which `after_phase` hook runs, whether it
@@ -13,7 +17,10 @@ they cannot drift").
 
 Order of operations, and the first one is not negotiable:
 
-1. `guard.check(...)` -- before a tokenizer, a dataset or a model exists.
+1. `guard.check(...)` -- before a tokenizer, a dataset or a model exists --
+   with the run's experiment id; then the exam stories on disk are confirmed
+   against the manifest's per-story hashes (`verify_exam_dir`), and the scorer
+   is bound to the same hashes.
 2. Resolve the config; seed; build or load the per-seed random init, so every
    arm at a given seed starts from byte-identical weights.
 3. Sequential arms other than `phase0` load `phase0_s{seed}.pt` and adopt its
@@ -66,6 +73,7 @@ from training.config import (
     ALL_PHASES,
     ARMS,
     EXAM_TYPES,
+    EXPERIMENT_ID,
     N_PHASES,
     PILOT_OVERRIDES,
     REAL,
@@ -178,13 +186,30 @@ def resolve_evaluate_all() -> EvaluateAllFn:
     # `tokenizer` and `cfg` are named, not **kw: `bind_tokenizer` looks for a
     # parameter called `tokenizer`, and a **kw wrapper would hide it, leaving
     # every score computed with a byte tokenizer the model never saw.
-    def evaluate_all_for_matrix(model, exam_dir, phases, *, tokenizer=None, cfg=None):
-        return detailed(model, exam_dir, phases, tokenizer=tokenizer, cfg=cfg).as_matrix_row()
+    # `story_hashes` likewise: it is how the scorer is tied to the manifest.
+    def evaluate_all_for_matrix(model, exam_dir, phases, *, tokenizer=None, cfg=None, story_hashes=None):
+        return detailed(
+            model, exam_dir, phases, tokenizer=tokenizer, cfg=cfg, story_hashes=story_hashes
+        ).as_matrix_row()
 
     return evaluate_all_for_matrix
 
 
-def bind_tokenizer(evaluate_all: EvaluateAllFn, tokenizer, cfg=None) -> EvaluateAllFn:
+def verify_exam_dir(exam_dir: Path, story_hashes: dict[str, int], phases) -> dict[int, int]:
+    """The exam stories on disk must be the manifest's, phase by phase.
+
+    `evaluate.verify_exam_stories` does the checking (the evaluator owns the
+    exam file format); `run` calls this once, right after the guard and before
+    a tokenizer or a model exists, so a swapped or edited exam directory costs
+    no GPU time. The scorer re-checks every row it scores.
+    """
+    mod = importlib.import_module("training.evaluate")
+    return mod.verify_exam_stories(exam_dir, story_hashes, phases)
+
+
+def bind_tokenizer(
+    evaluate_all: EvaluateAllFn, tokenizer, cfg=None, story_hashes=None
+) -> EvaluateAllFn:
     """Give the scorer the run's own tokenizer and eval config.
 
     The frozen hook is three positional arguments, so neither can be an
@@ -197,6 +222,11 @@ def bind_tokenizer(evaluate_all: EvaluateAllFn, tokenizer, cfg=None) -> Evaluate
     against a 64-token model. A scorer without the parameter -- a test stub --
     is left unchanged, one keyword at a time, so a stub that takes only one of
     them still works.
+
+    `story_hashes` is the manifest's normalised story hash -> phase (the guard
+    report's `exam_story_phases`): the real scorer checks every continuation
+    option's source against it and refuses an exam whose stories on disk are
+    not the manifest's (2026-09-30).
     """
     try:
         params = inspect.signature(evaluate_all).parameters
@@ -207,6 +237,8 @@ def bind_tokenizer(evaluate_all: EvaluateAllFn, tokenizer, cfg=None) -> Evaluate
         extras["tokenizer"] = tokenizer
     if cfg is not None and "cfg" in params:
         extras["cfg"] = cfg
+    if story_hashes is not None and "story_hashes" in params:
+        extras["story_hashes"] = story_hashes
     return partial(evaluate_all, **extras) if extras else evaluate_all
 
 
@@ -377,9 +409,24 @@ def run(
     evaluate_all: EvaluateAllFn | None = None,
 ) -> Path:
     # -- 1. the guard, before anything else exists --------------------------
-    guard_report = guard.check(args.train_dir, args.exam_dir, args.manifest)
+    # The experiment id comes from the run config (`config.EXPERIMENT_ID`)
+    # unless `--experiment-id` names another (the pre-pilot's own manifest). A
+    # Namespace built before the flag existed gets the config's id; one that
+    # carries None or "" is refused by the guard, never skipped.
+    guard_report = guard.check(
+        args.train_dir,
+        args.exam_dir,
+        args.manifest,
+        experiment_id=getattr(args, "experiment_id", EXPERIMENT_ID),
+    )
 
     settings = Settings(args)
+    # The exam this run will be scored on is the one the manifest froze: every
+    # declared phase's stories on disk, by the manifest's per-story hashes.
+    # Still before a tokenizer, a dataset or a model exists.
+    exam_story_counts = verify_exam_dir(
+        Path(args.exam_dir), guard_report.exam_story_phases, settings.phases
+    )
     arm = settings.arm
     tcfg = settings.train_cfg
     n_new = settings.n_new
@@ -402,6 +449,9 @@ def run(
         settings.model_cfg.vocab_size,
         shared_dir / "tokenizer.json",
         corpus_hash=guard_report.data_hash,
+        # A subset run's BPE sees the declared phases' files only, the ones
+        # DataModule trains on; a full run passes None and is unchanged.
+        phases=settings.phases if settings.subset else None,
     )
     data = DataModule(
         args.train_dir,
@@ -509,6 +559,9 @@ def run(
             "path": guard_report.manifest_path,
             "experiment_id": guard_report.experiment_id,
             "n_files": guard_report.n_manifest_files,
+            #: Per declared phase, the exam stories confirmed on disk against
+            #: the manifest's per-story hashes before the run started.
+            "exam_stories_verified": {str(k): n for k, n in exam_story_counts.items()},
         },
         # AGENTS.md, Amendments 2026-09-22: every hash under one key.
         "hashes": {
@@ -543,6 +596,7 @@ def run(
         evaluate_all if evaluate_all is not None else resolve_evaluate_all(),
         tokenizer,
         make_eval_config(settings.model_cfg),
+        story_hashes=guard_report.exam_story_phases,
     )
     exam_dir = Path(args.exam_dir)
     # The exam phases scored at every row: the declared ones. On the grid that
@@ -844,6 +898,15 @@ def build_parser() -> argparse.ArgumentParser:
             "subset-phase mode: the phases this run trains, comma-separated and ascending, "
             "e.g. 0,3,6. Phases keep their real ids everywhere (matrix, replay, checkpoints, "
             "report); undeclared phases need no training file. Default: all seven."
+        ),
+    )
+    p.add_argument(
+        "--experiment-id",
+        default=EXPERIMENT_ID,
+        help=(
+            "the experiment this run belongs to; the guard refuses unless the manifest's "
+            f"experiment_id equals it. Default: training.config.EXPERIMENT_ID ({EXPERIMENT_ID!r}). "
+            "Only a throwaway experiment with its own --manifest (the pre-pilot) passes another."
         ),
     )
     return p

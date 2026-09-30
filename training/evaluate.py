@@ -68,6 +68,8 @@ __all__ = [
     "score_perplexity_phase",
     "validate_continuation_item",
     "exam_story_phases",
+    "ExamManifestMismatch",
+    "verify_exam_stories",
     "load_jsonl",
 ]
 
@@ -449,6 +451,87 @@ def exam_story_phases(exam_dir: str | Path, phases: Iterable[int] | None = None)
     return out
 
 
+class ExamManifestMismatch(ValueError):
+    """The exam stories on disk are not the ones the manifest froze."""
+
+
+def _verify_phase_stories(
+    rows: Sequence[dict], phase: int, story_hashes: Mapping[str, int], where: str
+) -> int:
+    """Check one phase's exam story rows against the manifest's per-story
+    hashes; return the number of stories. See `verify_exam_stories`."""
+    from training.guard import story_sha256
+
+    story_hashes = {str(h).lower(): p for h, p in story_hashes.items()}
+    expected = {h for h, p in story_hashes.items() if p == phase}
+    seen: dict[str, str] = {}
+    for n, row in enumerate(rows, start=1):
+        rid = repr(row.get("id", "line " + str(n)))
+        if "story" not in row:
+            raise ExamManifestMismatch(where + ": story " + rid + " has no 'story' field")
+        if "phase" in row and row["phase"] != phase:
+            raise ExamManifestMismatch(
+                where + ": story " + rid + " says phase " + repr(row["phase"])
+                + " but sits in the phase-" + str(phase) + " file"
+            )
+        sha = story_sha256(row["story"])
+        if sha not in story_hashes:
+            raise ExamManifestMismatch(
+                where + ": story " + rid + " (story_sha256 " + sha + ") is not in the manifest; "
+                "the exam on disk is not the one that was frozen"
+            )
+        if story_hashes[sha] != phase:
+            raise ExamManifestMismatch(
+                where + ": story " + rid + " (story_sha256 " + sha + ") is a phase-"
+                + str(story_hashes[sha]) + " exam story in the manifest, not phase " + str(phase)
+            )
+        if sha in seen:
+            raise ExamManifestMismatch(
+                where + ": stories " + seen[sha] + " and " + rid + " are the same story ("
+                + sha + "); the manifest froze each exam story once"
+            )
+        seen[sha] = rid
+    missing = expected - set(seen)
+    if missing:
+        raise ExamManifestMismatch(
+            where + ": " + str(len(missing)) + " phase-" + str(phase) + " exam stories in the "
+            "manifest are not on disk (first: " + sorted(missing)[0] + ")"
+        )
+    return len(seen)
+
+
+def verify_exam_stories(
+    exam_dir: str | Path, story_hashes: Mapping[str, int], phases: Iterable[int]
+) -> dict[int, int]:
+    """Refuse unless the exam stories on disk are exactly the manifest's.
+
+    `story_hashes` is the manifest's normalised story sha256 -> phase (the
+    guard report's `exam_story_phases`). For each phase in `phases`, the
+    `stories/exam_phase_{k}.jsonl` file must exist, and its stories -- hashed
+    with `training.guard.story_sha256`, the manifest's definition -- must be
+    exactly the manifest's stories of phase k: none missing, none extra, none
+    duplicated, none filed under another phase. Returns {phase: n_stories}.
+
+    Before 2026-09-30 nothing tied the scorer to the frozen exam: the guard
+    checks the training side against the manifest's hashes and never opens the
+    exam directory, so an exam directory edited or swapped after the freeze
+    would have been scored without complaint. Messages carry ids, phases and
+    hashes only, never exam text.
+    """
+    exam_dir = Path(exam_dir)
+    if not story_hashes:
+        raise ExamManifestMismatch("the manifest's story hashes are empty; nothing to verify against")
+    counts: dict[int, int] = {}
+    for phase in phases:
+        path = _stories_path(exam_dir, phase)
+        if not path.is_file():
+            raise ExamManifestMismatch(
+                "exam stories for phase " + str(phase) + " are missing: " + str(path)
+            )
+        counts[phase] = _verify_phase_stories(load_jsonl(path), phase, story_hashes, path.name)
+    return counts
+
+
 def validate_continuation_item(row: dict, known_story_hashes: Any = None) -> int:
     """Check one continuation item and return its option count.
 
@@ -657,12 +740,30 @@ def evaluate_all_detailed(
     option's `option_sources[*].story_sha256` must be a member of. Without it
     the set is computed from the exam stories on disk (`exam_story_phases`),
     so the check never silently turns off.
+
+    When `story_hashes` is given it is also the frozen exam: each scored
+    phase's stories on disk must be exactly the manifest's stories of that
+    phase (`verify_exam_stories`'s rule), or `ExamManifestMismatch` is raised
+    before anything is scored. `train.py` always passes the guard's map.
     """
     cfg = cfg or EvalConfig()
     exam_dir = Path(exam_dir)
+    tied_to_manifest = story_hashes is not None
     if story_hashes is None:
         story_hashes = exam_story_phases(exam_dir)
+    elif not story_hashes:
+        raise ExamManifestMismatch("story_hashes is empty; nothing to verify the exam against")
     wanted = sorted(set(range(N_PHASES) if phases is None else phases))
+    for phase in wanted:
+        if not 0 <= phase < N_PHASES:
+            raise ValueError("phase " + str(phase) + " out of range 0.." + str(N_PHASES - 1))
+    stories_by_phase = {phase: load_jsonl(_stories_path(exam_dir, phase)) for phase in wanted}
+    if tied_to_manifest:
+        # Every scored phase first, so a mismatch refuses before any scoring.
+        for phase in wanted:
+            _verify_phase_stories(
+                stories_by_phase[phase], phase, story_hashes, _stories_path(exam_dir, phase).name
+            )
     tok = _resolve_tokenizer(model, tokenizer)
     device = torch.device(cfg.device) if cfg.device is not None else _model_device(model)
 
@@ -674,10 +775,7 @@ def evaluate_all_detailed(
         n_items = {k: [0] * N_PHASES for k in EXAM_TYPES}
         chance: dict[str, list[float | None]] = {k: [None] * N_PHASES for k in EXAM_TYPES}
         for phase in wanted:
-            if not 0 <= phase < N_PHASES:
-                raise ValueError("phase " + str(phase) + " out of range 0.." + str(N_PHASES - 1))
-
-            stories = load_jsonl(_stories_path(exam_dir, phase))
+            stories = stories_by_phase[phase]
             loss, n_tok = score_perplexity_phase(model, stories, tok, cfg, device)
             scores["perplexity"][phase] = loss
             n_items["perplexity"][phase] = n_tok

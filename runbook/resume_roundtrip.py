@@ -62,6 +62,9 @@ def _synthetic_exam_dir(root: Path, n_phases: int = N_PHASES, items_per_type: in
     script runs the genuine, unstubbed `training.evaluate.evaluate_all`
     end-to-end as a real Kaggle/A100 session would, so it needs exam files
     that actually parse and score, built from nothing but synthetic text.
+
+    STALE since amendment 2 (no `option_sources`, no story ids); no longer
+    used by `build_fixture`. Kept only so an old import does not break.
     """
     stories_dir = root / "stories"
     probes_dir = root / "probes"
@@ -112,14 +115,21 @@ def _synthetic_exam_dir(root: Path, n_phases: int = N_PHASES, items_per_type: in
 
 def build_fixture(root: Path) -> tuple[Path, Path, Path]:
     """Reuses `tests/conftest.py`'s synthetic train-dir and manifest builders
-    -- "one definition, used by every agent's tests" (AGENTS.md) -- but builds
-    its own exam directory (see `_synthetic_exam_dir`), because this script
-    exercises the real, unstubbed evaluator end-to-end."""
+    -- "one definition, used by every agent's tests" (AGENTS.md) -- including
+    the scoreable exam directory, because this script exercises the real,
+    unstubbed evaluator end-to-end.
+
+    Until 2026-09-30 this used `_synthetic_exam_dir` below, which predates
+    amendment 2 (no `option_sources`) and the per-story manifest (no story
+    `id`), so the proof could no longer build its fixture. conftest's
+    `write_scoreable_exam_dir` is kept current with the contracts by the test
+    suite that depends on it."""
     sys.path.insert(0, str(REPO_ROOT))
-    from tests.conftest import write_manifest, write_train_dir  # local import: optional dep on tests/
+    # local import: optional dep on tests/
+    from tests.conftest import write_manifest, write_scoreable_exam_dir, write_train_dir
 
     train_dir = write_train_dir(root / "train")
-    exam_dir = _synthetic_exam_dir(root / "exam")
+    exam_dir = write_scoreable_exam_dir(root / "exam")
     manifest = write_manifest(root / "manifest.json", exam_dir)
     return train_dir, exam_dir, manifest
 
@@ -183,6 +193,11 @@ def _train_argv(*, arm: str, seed: int, train_dir: Path, exam_dir: Path, manifes
         str(exam_dir),
         "--manifest",
         str(manifest),
+        # The fixture manifest's own id: the guard refuses a run whose
+        # experiment_id is not the manifest's (2026-09-30), and this fixture is
+        # not the main experiment's.
+        "--experiment-id",
+        str(json.loads(Path(manifest).read_text(encoding="utf-8"))["experiment_id"]),
         "--out",
         str(out),
         "--toy",
