@@ -19,6 +19,15 @@ Three rules run through everything here, and they are written down once:
    from the others it would be compared with. Every exclusion is printed with
    its reason.
 
+**Subset runs** (`train.py --phases 0,3,6`). A run's trained phases are read
+from `config.json["phases"]` (absent: all seven, as every run before the flag
+existed). The matrix stays 7x7 by real phase id and is never renumbered: rows
+of undeclared phases may be null and undeclared exam columns NaN, and only the
+declared rows and columns must be complete. Every metric is computed over the
+declared phases only (`metrics.py`, "Subset runs"), and a report never mixes
+runs that declare different phase lists -- the minority is excluded by name.
+A full 0..6 run takes exactly the path it always took.
+
 This module computes the hypothesis verdicts; the lead decides what is written
 into `PLAN.md`. Nothing here edits a threshold - they are quoted from PLAN.md
 as strings in `H_THRESHOLDS` and implemented in the units they are stated in.
@@ -40,7 +49,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from training import metrics
-from training.config import EXAM_TYPES, HEADLINE_EXAM_TYPE, N_PHASES, SEEDS
+from training.config import ALL_PHASES, EXAM_TYPES, HEADLINE_EXAM_TYPE, N_PHASES, SEEDS, resolve_phases
 
 __all__ = [
     "NO_DIFFERENCE_RULE",
@@ -165,6 +174,20 @@ class RunRecord:
     #: This arm's tokens per Arm A's, as the run recorded it. Never recomputed.
     token_ratio: float | None
     config: dict
+    #: The phases the run trained, by real id (config.json "phases"). All seven
+    #: for a full run; an undeclared phase's cells are NaN in `matrix` and
+    #: `untrained`, whatever the file held.
+    phases: tuple[int, ...] = ALL_PHASES
+
+    @property
+    def subset(self) -> bool:
+        return self.phases != ALL_PHASES
+
+    @property
+    def metric_phases(self) -> tuple[int, ...] | None:
+        """What `metrics.*(phases=...)` takes: None for a full run, so it goes
+        through the unchanged full-run code path."""
+        return self.phases if self.subset else None
 
 
 def _read_json(path: Path) -> dict:
@@ -267,7 +290,21 @@ def _is_number(v: object) -> bool:
     return math.isfinite(v)
 
 
-def _matrix_problem(rows: object, key: str) -> str | None:
+def _run_phases(config: Mapping) -> tuple[int, ...] | str:
+    """The run's declared phases from config.json, or why they are unusable.
+    Absent means all seven (every run written before `--phases` existed)."""
+    if "phases" not in config:
+        return ALL_PHASES
+    raw = config["phases"]
+    if not isinstance(raw, (list, tuple)):
+        return 'config.json "phases" is not a list: ' + repr(raw)
+    try:
+        return resolve_phases(raw)
+    except ValueError as exc:
+        return 'config.json "phases" is invalid: ' + str(exc)
+
+
+def _matrix_problem(rows: object, key: str, phases: tuple[int, ...] = ALL_PHASES) -> str | None:
     """Why this 7x7 block is unusable, or None.
 
     A Kaggle session dying part-way through is the *expected* failure, not an
@@ -275,6 +312,10 @@ def _matrix_problem(rows: object, key: str) -> str | None:
     them in row by row, so a folder from a dead session has null rows at the
     bottom. Such a run is excluded and named - it never raises, because one
     unfinished run must not take the whole report down with it.
+
+    In a subset run only the declared rows and, within them, the declared
+    columns must be complete; an undeclared row is null by design and an
+    undeclared column NaN.
     """
     where = "matrix.json[" + repr(key) + "]"
     if not isinstance(rows, (list, tuple)) or len(rows) != N_PHASES:
@@ -282,22 +323,25 @@ def _matrix_problem(rows: object, key: str) -> str | None:
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) != N_PHASES:
             return where + " is not 7x7"
-    incomplete = [i for i, row in enumerate(rows) if not all(_is_number(v) for v in row)]
+    incomplete = [
+        i for i, row in enumerate(rows) if i in phases and not all(_is_number(row[j]) for j in phases)
+    ]
     if incomplete:
+        of = "0-6" if phases == ALL_PHASES else "the declared phases " + str(list(phases))
         return (
             where + " is incomplete: row(s) "
             + ", ".join(str(i) for i in incomplete)
-            + " of 0-6 hold a null or non-finite cell (a run that did not finish - "
+            + " of " + of + " hold a null or non-finite cell (a run that did not finish - "
             "a dead session leaves the later rows unscored)"
         )
     return None
 
 
-def _untrained_problem(values: object, key: str) -> str | None:
+def _untrained_problem(values: object, key: str, phases: tuple[int, ...] = ALL_PHASES) -> str | None:
     where = "matrix.json untrained[" + repr(key) + "]"
     if not isinstance(values, (list, tuple)) or len(values) != N_PHASES:
         return where + " is not 7 long"
-    missing = [j for j, v in enumerate(values) if not _is_number(v)]
+    missing = [j for j, v in enumerate(values) if j in phases and not _is_number(v)]
     if missing:
         return (
             where + " is incomplete: phase(s) "
@@ -329,6 +373,10 @@ def load_run(path: str | Path) -> RunRecord | Exclusion:
     if dirty:
         return Exclusion(run_id, "dirty tree in commit.txt (a dirty tree is not a result)")
 
+    phases = _run_phases(config)
+    if isinstance(phases, str):
+        return Exclusion(run_id, phases)
+
     M = matrix_doc.get("M")
     untrained = matrix_doc.get("untrained")
     if not isinstance(M, Mapping) or not isinstance(untrained, Mapping):
@@ -336,10 +384,10 @@ def load_run(path: str | Path) -> RunRecord | Exclusion:
     for exam_type in metrics.STORED_EXAM_KEYS:
         if exam_type not in M or exam_type not in untrained:
             return Exclusion(run_id, "matrix.json is missing key " + repr(exam_type))
-        problem = _matrix_problem(M[exam_type], exam_type)
+        problem = _matrix_problem(M[exam_type], exam_type, phases)
         if problem is not None:
             return Exclusion(run_id, problem)
-        problem = _untrained_problem(untrained[exam_type], exam_type)
+        problem = _untrained_problem(untrained[exam_type], exam_type, phases)
         if problem is not None:
             return Exclusion(run_id, problem)
 
@@ -371,11 +419,21 @@ def load_run(path: str | Path) -> RunRecord | Exclusion:
         commit=str(commit_info.get("commit", commit_info.get("sha", ""))),
         gpu_name=gpu_name,
         gpu_hours=float(timings["gpu_hours"]),
-        matrix={k: [[float(v) for v in row] for row in M[k]] for k in metrics.STORED_EXAM_KEYS},
-        untrained={k: [float(v) for v in untrained[k]] for k in metrics.STORED_EXAM_KEYS},
+        matrix={
+            k: [
+                [float(v) if (i in phases and j in phases) else math.nan for j, v in enumerate(row)]
+                for i, row in enumerate(M[k])
+            ]
+            for k in metrics.STORED_EXAM_KEYS
+        },
+        untrained={
+            k: [float(v) if j in phases else math.nan for j, v in enumerate(untrained[k])]
+            for k in metrics.STORED_EXAM_KEYS
+        },
         hashes=hashes,
         token_ratio=recorded_token_ratio(config),
         config=dict(config),
+        phases=phases,
     )
 
 
@@ -414,6 +472,30 @@ def group_by_arm(runs: Iterable[RunRecord]) -> dict[str, list[RunRecord]]:
     for runs_for_arm in out.values():
         runs_for_arm.sort(key=lambda r: r.seed)
     return out
+
+
+def filter_same_phases(
+    runs: Sequence[RunRecord],
+) -> tuple[list[RunRecord], list[Exclusion]]:
+    """Keep the runs that declare the majority's phase list; refuse the rest
+    by name. A 0/3/6 run's average accuracy is over three phases and a full
+    run's over seven: comparing them would compare two different numbers."""
+    if not runs:
+        return [], []
+    majority = statistics.mode([r.phases for r in runs])
+    kept, refused = [], []
+    for run in runs:
+        if run.phases == majority:
+            kept.append(run)
+        else:
+            refused.append(
+                Exclusion(
+                    run.run_id,
+                    "declares phases " + str(list(run.phases)) + " but the rest of this report "
+                    "declares " + str(list(majority)) + "; runs over different phases are not compared",
+                )
+            )
+    return kept, refused
 
 
 def filter_consistent(
@@ -548,7 +630,7 @@ def arm_average_accuracy(runs: Sequence[RunRecord], exam_type: str) -> Aggregate
     return aggregate(
         "avg accuracy [" + exam_type + "]",
         runs,
-        lambda r: metrics.average_accuracy(r.matrix[exam_type], exam_type),
+        lambda r: metrics.average_accuracy(r.matrix[exam_type], exam_type, phases=r.metric_phases),
     )
 
 
@@ -556,7 +638,7 @@ def arm_average_forgetting(runs: Sequence[RunRecord], exam_type: str) -> Aggrega
     return aggregate(
         "avg forgetting [" + exam_type + "]",
         runs,
-        lambda r: metrics.average_forgetting(r.matrix[exam_type], exam_type),
+        lambda r: metrics.average_forgetting(r.matrix[exam_type], exam_type, phases=r.metric_phases),
     )
 
 
@@ -566,7 +648,9 @@ def arm_fraction_of_peak_lost(
     return aggregate(
         "fraction of peak phase-" + str(phase) + " score lost [" + exam_type + "]",
         runs,
-        lambda r: metrics.fraction_of_peak_lost(r.matrix[exam_type], exam_type, phase),
+        lambda r: metrics.fraction_of_peak_lost(
+            r.matrix[exam_type], exam_type, phase, phases=r.metric_phases
+        ),
     )
 
 
@@ -990,7 +1074,9 @@ def plot_heatmaps(
     out_dir.mkdir(parents=True, exist_ok=True)
     names = [a for a in sorted(arms) if arms[a]]
     mats = {a: _mean_matrix(arms[a], exam_type) for a in names}
-    flat = [v for m in mats.values() for row in m for v in row]
+    # A subset run's undeclared cells are NaN and draw as blank; they never
+    # set the colour scale.
+    flat = [v for m in mats.values() for row in m for v in row if math.isfinite(v)]
     vmin, vmax = (min(flat), max(flat)) if flat else (0.0, 1.0)
     fig, axes = plt.subplots(1, max(1, len(names)), figsize=(3.0 * max(1, len(names)), 3.4))
     axes = [axes] if len(names) <= 1 else list(axes)
@@ -1020,11 +1106,12 @@ def plot_forgetting_curve(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
-    xs = list(range(N_PHASES))
     for name in sorted(arms):
         runs = arms[name]
         if not runs:
             continue
+        # Real phase ids on the x axis: a 0/3/6 run plots at 0, 3 and 6.
+        xs = list(runs[0].phases)
         cols = [[r.matrix[exam_type][i][0] for r in runs] for i in xs]
         means = [sum(c) / len(c) for c in cols]
         sds = [statistics.stdev(c) if len(c) > 1 else 0.0 for c in cols]
@@ -1062,6 +1149,8 @@ def write_report(
     """Discover runs, refuse the bad ones by name, aggregate, plot, write
     `report.txt`. Returns the path of the report."""
     runs, exclusions = discover_runs(results_dir, pilot=pilot)
+    runs, refused_phases = filter_same_phases(runs)
+    exclusions.extend(refused_phases)
     by_arm = group_by_arm(runs)
     consistent: dict[str, list[RunRecord]] = {}
     for arm, arm_runs in by_arm.items():
@@ -1075,6 +1164,14 @@ def write_report(
         ("Lifespan " + ("pilot" if pilot else "grid") + " report"),
         "results dir: " + str(Path(results_dir)),
         "",
+    ]
+    if runs and runs[0].subset:
+        lines += [
+            "phases: " + str(list(runs[0].phases)) + " (subset run: every number below is over "
+            "these phases only, by real id; the others were never trained or examined)",
+            "",
+        ]
+    lines += [
         render_exclusions(exclusions),
         "",
     ]

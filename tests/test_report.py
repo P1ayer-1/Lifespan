@@ -67,8 +67,13 @@ def write_run(
     omit: tuple[str, ...] = (),
     commit_txt: str | None = None,
     token_budget: dict | None = None,
+    phases: tuple[int, ...] | list | None = None,
 ) -> Path:
-    """One `results/<run_id>/` folder, fabricated."""
+    """One `results/<run_id>/` folder, fabricated.
+
+    `phases` makes it a subset run the way train.py writes one: config.json
+    carries "phases", undeclared rows of M are null and undeclared exam
+    columns (and untrained entries) NaN."""
     run_id = arm + "_s" + str(seed) + "_abc1234_20260921T000000Z"
     path = results_dir / run_id
     path.mkdir(parents=True, exist_ok=True)
@@ -90,6 +95,18 @@ def write_run(
         "M": {"perplexity": ppl, "cloze": cloze, "continuation": cont,
               "continuation_summed": summed},
     }
+    config_extra: dict = {}
+    if phases is not None:
+        config_extra["phases"] = list(phases)
+        declared = set(phases) if all(isinstance(p, int) for p in phases) else set()
+        nan = float("nan")
+        for key, block in matrix["M"].items():
+            matrix["M"][key] = [
+                [v if j in declared else nan for j, v in enumerate(row)] if i in declared else [None] * N_PHASES
+                for i, row in enumerate(block)
+            ]
+        for key, row in matrix["untrained"].items():
+            matrix["untrained"][key] = [v if j in declared else nan for j, v in enumerate(row)]
     files = {
         "matrix.json": json.dumps(matrix),
         "timings.json": json.dumps({
@@ -105,6 +122,7 @@ def write_run(
                  "total_replay_tokens": 0,
              }},
             **(HASHES if hashes is None else hashes),
+            **config_extra,
         )),
         "commit.txt": commit_txt if commit_txt is not None else (
             "commit: " + "a" * 40 + "\n"
@@ -699,6 +717,113 @@ def test_write_report_end_to_end(tmp_path):
     assert "n=3" in text
     assert "[stored, never headlined]" in text  # perplexity and continuation_summed
     assert "token ratio vs Arm A (recorded in config.json, not recomputed)" in text
+    for exam_type in EXAM_TYPES:
+        assert (out / ("heatmap_" + exam_type + ".png")).is_file()
+        assert (out / ("forgetting_" + exam_type + ".png")).is_file()
+
+
+# --------------------------------------------------------------------------- #
+# subset runs (train.py --phases 0,3,6)
+# --------------------------------------------------------------------------- #
+
+SUBSET = (0, 3, 6)
+
+
+def test_a_subset_run_loads_with_real_ids_and_nan_outside_its_phases(tmp_path):
+    import math
+
+    path = write_run(tmp_path, "A", 0, final_acc=0.5, forgetting=0.2, phases=SUBSET)
+    run = report.load_run(path)
+    assert isinstance(run, report.RunRecord), run
+    assert run.phases == SUBSET and run.subset and run.metric_phases == SUBSET
+    M = run.matrix["continuation"]
+    assert len(M) == N_PHASES and all(len(r) == N_PHASES for r in M)
+    assert all(math.isnan(M[i][j]) for i in range(N_PHASES) for j in range(N_PHASES)
+               if i not in SUBSET or j not in SUBSET)
+    assert M[3][3] == pytest.approx(0.7) and M[6][3] == pytest.approx(0.5)
+    assert math.isnan(run.untrained["cloze"][4]) and run.untrained["cloze"][3] == pytest.approx(0.05)
+
+
+def test_subset_metrics_are_over_the_declared_phases(tmp_path):
+    """build_matrix puts final_acc everywhere and final_acc + forgetting on the
+    diagonal for j < 6. Over rows/columns 0, 3, 6: last declared row all 0.5
+    -> accuracy 0.5; forgetting of 0 and of 3 is 0.2 each -> average 0.2;
+    phase 0 lost 0.2 of a 0.7 peak = 0.285714..."""
+    write_arm(tmp_path, "A", final_acc=0.5, forgetting=0.2, phases=SUBSET)
+    runs, excluded = report.discover_runs(tmp_path)
+    assert excluded == [] and len(runs) == 3
+    acc = report.arm_average_accuracy(runs, "continuation")
+    forg = report.arm_average_forgetting(runs, "continuation")
+    lost = report.arm_fraction_of_peak_lost(runs, "continuation", 0)
+    # seed jitter: final_acc +/-0.005, forgetting +/-0.004 (write_arm)
+    assert acc.values == pytest.approx([0.495, 0.5, 0.505])
+    assert forg.values == pytest.approx([0.196, 0.2, 0.204])
+    assert lost.values[1] == pytest.approx(0.2 / 0.7)
+
+
+def test_a_full_run_that_declares_all_seven_reads_exactly_like_one_that_does_not(tmp_path):
+    a = report.load_run(write_run(tmp_path / "x", "A", 0, final_acc=0.5, forgetting=0.2))
+    b = report.load_run(write_run(tmp_path / "y", "A", 0, final_acc=0.5, forgetting=0.2, phases=range(N_PHASES)))
+    assert a.phases == b.phases and not b.subset and b.metric_phases is None
+    assert a.matrix == b.matrix and a.untrained == b.untrained
+    for t in ("continuation", "cloze"):
+        assert report.arm_average_accuracy([a], t).values == report.arm_average_accuracy([b], t).values
+        assert report.arm_average_forgetting([a], t).values == report.arm_average_forgetting([b], t).values
+
+
+def test_a_subset_run_missing_a_declared_cell_is_excluded_by_name(tmp_path):
+    path = write_run(tmp_path, "A", 0, final_acc=0.5, forgetting=0.2, phases=SUBSET)
+    doc = json.loads((path / "matrix.json").read_text(encoding="utf-8"))
+    doc["M"]["cloze"][6][3] = None
+    (path / "matrix.json").write_text(json.dumps(doc), encoding="utf-8")
+    got = report.load_run(path)
+    assert isinstance(got, report.Exclusion)
+    assert "row(s) 6 of the declared phases [0, 3, 6]" in got.reason
+
+
+def test_an_undeclared_row_left_null_is_not_an_incomplete_run(tmp_path):
+    """The same null rows that exclude a full run as a dead session are the
+    design of a subset run."""
+    full = write_run(tmp_path / "full", "A", 0, final_acc=0.5, forgetting=0.2)
+    doc = json.loads((full / "matrix.json").read_text(encoding="utf-8"))
+    for key in doc["M"]:
+        doc["M"][key][1] = [None] * N_PHASES
+    (full / "matrix.json").write_text(json.dumps(doc), encoding="utf-8")
+    assert isinstance(report.load_run(full), report.Exclusion)
+    assert isinstance(
+        report.load_run(write_run(tmp_path / "sub", "A", 0, final_acc=0.5, forgetting=0.2, phases=SUBSET)),
+        report.RunRecord,
+    )
+
+
+@pytest.mark.parametrize("bad", [[3, 6], [0, 6, 3], [0, 7], "0,3,6"])
+def test_an_invalid_phase_list_is_excluded(tmp_path, bad):
+    path = write_run(tmp_path, "A", 0, final_acc=0.5, forgetting=0.2)
+    cfg = json.loads((path / "config.json").read_text(encoding="utf-8"))
+    cfg["phases"] = bad
+    (path / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    got = report.load_run(path)
+    assert isinstance(got, report.Exclusion) and '"phases"' in got.reason
+
+
+def test_runs_over_different_phase_lists_are_never_compared(tmp_path):
+    results = tmp_path / "results"
+    write_arm(results, "A", final_acc=0.5, forgetting=0.2, phases=SUBSET)
+    write_run(results, "E", 0, final_acc=0.6, forgetting=0.0)  # a full run
+    path = report.write_report(results, tmp_path / "out", plots=False)
+    text = path.read_text(encoding="utf-8")
+    assert "E_s0_abc1234_20260921T000000Z: declares phases [0, 1, 2, 3, 4, 5, 6]" in text
+    assert "phases: [0, 3, 6] (subset run" in text
+    assert "Arm A (3 runs)" in text and "Arm E (1 runs)" not in text
+
+
+def test_a_subset_report_writes_its_plots_on_real_phase_ids(tmp_path):
+    results = tmp_path / "results"
+    write_arm(results, "A", final_acc=0.5, forgetting=0.2, phases=SUBSET)
+    write_arm(results, "E", final_acc=0.6, forgetting=0.0, phases=SUBSET)
+    out = tmp_path / "out"
+    text = report.write_report(results, out).read_text(encoding="utf-8")
+    assert "Excluded runs: none." in text
     for exam_type in EXAM_TYPES:
         assert (out / ("heatmap_" + exam_type + ".png")).is_file()
         assert (out / ("forgetting_" + exam_type + ".png")).is_file()

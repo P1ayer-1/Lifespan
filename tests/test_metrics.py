@@ -170,3 +170,104 @@ def test_fraction_of_peak_lost_refuses_a_non_positive_peak():
     zeroed = [[0.0] * N_PHASES for _ in range(N_PHASES)]
     with pytest.raises(ValueError):
         metrics.fraction_of_peak_lost(zeroed, "continuation", 0)
+
+
+# --------------------------------------------------------------------------- #
+# subset runs (train.py --phases 0,3,6): real ids, declared phases only
+# --------------------------------------------------------------------------- #
+
+NAN = float("nan")
+SUBSET = (0, 3, 6)
+
+
+def _subset_of(full, untrained):
+    """What a 0/3/6 run writes: rows 1, 2, 4, 5 null, undeclared columns NaN,
+    the declared cells taken from HAND."""
+    M = [
+        [full[i][j] if j in SUBSET else NAN for j in range(N_PHASES)] if i in SUBSET else [None] * N_PHASES
+        for i in range(N_PHASES)
+    ]
+    u = [untrained[j] if j in SUBSET else NAN for j in range(N_PHASES)]
+    return M, u
+
+
+SUB, SUB_U = _subset_of(HAND, UNTRAINED)
+# declared cells, read off HAND:
+#            j=0   j=3   j=6
+#   i=0     0.80  0.20  0.25
+#   i=3     0.55  0.80  0.25
+#   i=6     0.40  0.60  0.80
+# untrained j=3 0.28, j=6 0.25
+
+
+def test_subset_average_accuracy_is_the_last_declared_row_over_declared_phases():
+    # (0.40 + 0.60 + 0.80) / 3 = 0.60
+    assert metrics.average_accuracy(SUB, "continuation", phases=SUBSET) == pytest.approx(0.60)
+
+
+def test_subset_forgetting_uses_declared_rows_and_never_renumbers():
+    # j=0: max(0.80, 0.55, 0.40) - 0.40 = 0.40
+    # j=3: max(0.20, 0.80, 0.60) - 0.60 = 0.20
+    # j=6: max(0.25, 0.25, 0.80) - 0.80 = 0.00
+    got = metrics.per_phase_forgetting(SUB, "continuation", phases=SUBSET)
+    assert len(got) == N_PHASES
+    assert [got[j] for j in (1, 2, 4, 5)] == [None] * 4
+    assert got[0] == pytest.approx(0.40) and got[3] == pytest.approx(0.20) and got[6] == pytest.approx(0.0)
+    # average over declared j except the last declared: (0.40 + 0.20) / 2
+    assert metrics.average_forgetting(SUB, "continuation", phases=SUBSET) == pytest.approx(0.30)
+
+
+def test_subset_forward_transfer_is_from_the_previous_declared_phase():
+    # j=3: M[0][3] - untrained[3] = 0.20 - 0.28 = -0.08
+    # j=6: M[3][6] - untrained[6] = 0.25 - 0.25 =  0.00
+    got = metrics.forward_transfer(SUB, SUB_U, "continuation", phases=SUBSET)
+    assert [got[j] for j in (0, 1, 2, 4, 5)] == [None] * 5
+    assert got[3] == pytest.approx(-0.08) and got[6] == pytest.approx(0.0)
+
+
+def test_subset_fraction_of_peak_lost_reads_phase_zero_over_declared_rows():
+    # peak 0.80 (after 0), final 0.40 (after 6): 0.40 / 0.80 = 0.5
+    assert metrics.fraction_of_peak_lost(SUB, "continuation", 0, phases=SUBSET) == pytest.approx(0.5)
+    with pytest.raises(ValueError, match="not one of the declared phases"):
+        metrics.fraction_of_peak_lost(SUB, "continuation", 1, phases=SUBSET)
+
+
+def test_subset_perplexity_is_negated_like_a_full_run():
+    # Read SUB's cells as losses; score = -loss, so
+    #   j=0: max(-0.80, -0.55, -0.40) - (-0.40) = 0.00
+    #   j=3: max(-0.20, -0.80, -0.60) - (-0.60) = 0.40  (the loss rose 0.20 -> 0.60)
+    got = metrics.per_phase_forgetting(SUB, "perplexity", phases=SUBSET)
+    assert got[0] == pytest.approx(0.0) and got[3] == pytest.approx(0.40)
+
+
+def test_subset_mode_refuses_a_missing_declared_cell_and_a_bad_phase_list():
+    broken = [list(r) for r in SUB]
+    broken[3][6] = None
+    with pytest.raises(ValueError, match=r"M\[3\]\[6\]"):
+        metrics.average_accuracy(broken, "continuation", phases=SUBSET)
+    broken[3] = [None] * N_PHASES
+    with pytest.raises(ValueError):
+        metrics.average_forgetting(broken, "continuation", phases=SUBSET)
+    for bad in ((3, 6), (0, 6, 3), (0, 7)):
+        with pytest.raises(ValueError):
+            metrics.average_accuracy(SUB, "continuation", phases=bad)
+    u = list(SUB_U)
+    u[3] = None
+    with pytest.raises(ValueError, match=r"untrained\[3\]"):
+        metrics.forward_transfer(SUB, u, "continuation", phases=SUBSET)
+
+
+def test_a_full_run_gives_the_same_numbers_with_or_without_the_phase_list():
+    """phases=None is the unchanged code path; declaring all seven must agree
+    with it exactly, not merely approximately."""
+    full = tuple(range(N_PHASES))
+    for t in ("continuation", "perplexity"):
+        assert metrics.average_accuracy(HAND, t, phases=full) == metrics.average_accuracy(HAND, t)
+        assert metrics.average_forgetting(HAND, t, phases=full) == metrics.average_forgetting(HAND, t)
+        assert metrics.per_phase_forgetting(HAND, t, phases=full) == metrics.per_phase_forgetting(HAND, t)
+        assert metrics.forward_transfer(HAND, UNTRAINED, t, phases=full) == metrics.forward_transfer(
+            HAND, UNTRAINED, t
+        )
+    assert metrics.fraction_of_peak_lost(HAND, "cloze", 0, phases=full) == metrics.fraction_of_peak_lost(
+        HAND, "cloze", 0
+    )
