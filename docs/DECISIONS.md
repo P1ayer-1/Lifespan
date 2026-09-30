@@ -723,3 +723,44 @@ hashes / one model / LF. curriculum-learning `test_generate_responses.py`
   in up to half of a phase-6 part); the template fixes only the main
   character's name. A fix changes every prompt hash, so it belongs with
   the next template change, not mid-pilot.
+
+## 2026-09-30 — leakage audit re-run 3: PASS
+
+The three BLOCKING findings of 2026-09-25 are fixed, merged and re-attacked:
+audit-data-split (79b9f87: data.py refuses any line whose split is not
+"train"; `--phases` subset mode with real phase ids), audit-guard (per-story
+`prompt_hash`/`story_sha256` in the manifest, every training line checked,
+manifest `generator_model` must equal the corpus model, option_sources
+checked against manifest hashes, `training/neardup.py`, `training/probes.py`)
+and audit-wiring (experiment_id required, the scorer tied to the manifest,
+tokenizer split check, subset-aware metrics/report/validate, AGENTS.md
+amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
+
+- Re-run 3 (lifespan-auditor, read-only, synthetic attacks, no exam text;
+  Lifespan fe39adf) confirmed all three old findings closed and **blocked on
+  one new one**: guard.py split lines with `str.splitlines()` (also breaking
+  on U+2028/U+2029/NEL/VT/FF/x1c-x1e) while data.py and tokenizer.py split on
+  CRLF/CR/LF only. An exam line carrying U+2028 in any field passed the guard
+  and was trained on. Realistic: the generator writes `ensure_ascii=False`.
+  Fixed in 7e1ebd3 (`guard.loader_lines`, unparseable .jsonl lines refused,
+  neardup uses it); re-attacked with all separators in side fields, stories
+  and replay .json, lone-CR and mixed endings: refused. **Verdict at e7620bc:
+  PASS.** Suite 472 passed, 0 failed.
+- Should-fix from the same run: a 0/3/6 exam could not build continuation
+  probes (three distinct other phases required). **Owner decision:** keep 4
+  options and chance 1/4; with fewer than three other phases the three
+  distractors are spread over them as evenly as possible (2+1), from
+  different stories where possible (e7620bc, AGENTS.md). A full 0..6 exam's
+  probes are byte-identical; 3,600 subset items over 40 seeds had 0
+  violations and verify_probes/the evaluator refuse own-phase, own-story and
+  mislabelled distractors.
+- Guard cost on the real corpora (pre-pilot, 9 MB): 0.5 s per run; ~5 s at
+  grid size. Near-dup check at freeze: 2.3 s for 300 exam vs 2,641 train.
+- Open, not blocking: the guard is exact-hash by design, so near-copies are
+  left to neardup at exam freeze; neardup misses a story split in halves with
+  a new opening, the middle 40% of a story, and zero-width spaces inside
+  words; nothing ties the freeze-time near-dup result to stories added
+  later (phases 1, 2, 4, 5, regeneration rounds). The main experiment's
+  EXPERIMENT_ID defaults to "lifespan-main" (agent's choice, awaiting the
+  lead). The Kaggle notebook does not yet pass --manifest, --phases or
+  --experiment-id, so it cannot launch the pre-pilot as is.
