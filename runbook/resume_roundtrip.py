@@ -183,6 +183,11 @@ def _train_argv(*, arm: str, seed: int, train_dir: Path, exam_dir: Path, manifes
         str(exam_dir),
         "--manifest",
         str(manifest),
+        # The fixture manifest's own id: the guard refuses a run whose
+        # experiment_id is not the manifest's (2026-09-30), and this fixture is
+        # not the main experiment's.
+        "--experiment-id",
+        str(json.loads(Path(manifest).read_text(encoding="utf-8"))["experiment_id"]),
         "--out",
         str(out),
         "--toy",

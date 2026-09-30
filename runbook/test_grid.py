@@ -173,3 +173,18 @@ def test_resumable_after_being_killed_halfway(monkeypatch, tmp_path, clean_tree)
     assert set(ran_second) == {"B", "C", "D", "D-nr", "E"}
     statuses = {r["arm"]: r["status"] for r in reports}
     assert all(s == "complete" or s == "already_complete" for s in statuses.values())
+
+
+def test_the_experiment_id_is_passed_through_only_when_given(tmp_path):
+    """Omitted, train.py falls back to training.config.EXPERIMENT_ID (the
+    grid's); given, it reaches the frozen CLI verbatim (2026-09-30)."""
+    common = dict(
+        arm="A", seed=0, train_dir=tmp_path / "t", exam_dir=tmp_path / "e", out_dir=tmp_path / "o",
+        phase0_dir=tmp_path / "p", resume=False, manifest=None, toy=True, cpu=True,
+    )
+    assert "--experiment-id" not in grid.build_train_argv(**common)
+    argv = grid.build_train_argv(**common, experiment_id="pre-pilot")
+    assert argv[argv.index("--experiment-id") + 1] == "pre-pilot"
+    assert grid.build_parser().parse_args(
+        ["--train-dir", "t", "--exam-dir", "e", "--experiment-id", "x"]
+    ).experiment_id == "x"
