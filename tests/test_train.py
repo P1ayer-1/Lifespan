@@ -9,6 +9,7 @@ phase-0 checkpoint is shared. `after_phase` is `hooks.identity_after_phase`;
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 NL = chr(10)
@@ -785,3 +786,175 @@ def test_the_ratio_is_summed_from_per_phase_rows_not_a_closed_form(scoreable_dir
     assert b["tokens_vs_arm_a"] == pytest.approx(
         (b["total_new_phase_tokens"] + b["total_replay_tokens"]) / arm_a
     )
+
+
+# ---------------------------------------------------------------------------
+# subset-phase mode through the loop (leakage re-audit 2026-09-25, should-fix):
+# a 0/3/6 run records phases 0, 3 and 6 as 0, 3 and 6 in the matrix, the
+# replay, the checkpoints, the timings and config.json. Never 0, 1, 2.
+
+SUBSET = (0, 3, 6)
+
+
+@pytest.fixture
+def subset_dirs(tmp_path: Path) -> dict:
+    """A corpus with only phases 0, 3 and 6 on disk, like the pre-pilot."""
+    from tests.conftest import write_exam_dir, write_manifest, write_train_dir
+
+    exam = write_exam_dir(tmp_path / "exam")
+    return {
+        "train": write_train_dir(tmp_path / "train", phases=SUBSET),
+        "exam": exam,
+        "manifest": write_manifest(tmp_path / "manifest.json", exam),
+        "results": tmp_path / "results",
+        "shared": tmp_path / "shared",
+        "tmp": tmp_path,
+    }
+
+
+def subset_args(dirs: dict, arm: str, seed: int = 0, **kw):
+    args = toy_args(dirs, arm, seed, **kw)
+    args.phases = SUBSET
+    return args
+
+
+def nan_outside(calls: list):
+    """Like the real scorer: NaN in every exam column it was not asked for."""
+
+    def _inner(model, exam_dir, phases):
+        calls.append(list(phases))
+        row = fake_evaluate_all(model, exam_dir, phases)
+        return {t: [v if j in phases else float("nan") for j, v in enumerate(vals)] for t, vals in row.items()}
+
+    return _inner
+
+
+def test_a_subset_run_records_real_phase_ids_everywhere(subset_dirs):
+    from tests.conftest import phase_byte
+
+    calls: list = []
+    closed: list = []
+    replay_letters: dict[int, set[int]] = {}
+
+    def spy(model, phase_k, ctx):
+        closed.append((phase_k, ctx.phase))
+        letters: set[int] = set()
+        for batch in ctx.make_replay_loader(4):
+            for row in batch.tolist():
+                letters |= {b for b in row if b not in (0, ord(" "), ord("\n"), ord("."))}
+        replay_letters[phase_k] = letters
+        return model
+
+    run(subset_args(subset_dirs, "phase0"), after_phase=spy, evaluate_all=nan_outside(calls))
+    closed.clear()
+    out = run(subset_args(subset_dirs, "B"), after_phase=spy, evaluate_all=nan_outside(calls))
+
+    assert calls and all(c == [0, 3, 6] for c in calls), "only declared exam phases are scored"
+    assert closed == [(3, 3), (6, 6)], "the hook sees real ids, never 1 and 2"
+    assert replay_letters[3] == {phase_byte(0)}
+    assert replay_letters[6] == {phase_byte(0), phase_byte(3)}
+
+    m = matrix_of(out)
+    for t in MATRIX_KEYS:
+        assert len(m["M"][t]) == N_PHASES, "the matrix stays 7x7, indexed by real id"
+        for i in range(N_PHASES):
+            if i in SUBSET:
+                row = m["M"][t][i]
+                assert all(isinstance(row[j], float) and not math.isnan(row[j]) for j in SUBSET)
+                assert all(math.isnan(row[j]) for j in range(N_PHASES) if j not in SUBSET), "unscored, not guessed"
+            else:
+                assert m["M"][t][i] == [None] * N_PHASES, f"phase {i} was never trained"
+
+    cfg = config_of(out)
+    assert cfg["phases"] == [0, 3, 6] and cfg["subset_phases"] is True and cfg["n_phases"] == N_PHASES
+    assert [r["phase"] for r in cfg["token_budget"]["per_phase"]] == [0, 3, 6]
+    assert [c["phase"] for c in cfg["corpus"]] == [0, 3, 6]
+    assert sorted(cfg["warmup_steps"], key=int) == ["0", "3", "6"]
+    assert [r["phase"] for r in timings_of(out)["per_phase"]] == [0, 3, 6]
+    assert load_state(state_path(out)).completed_phase == 6
+
+
+def test_a_subset_arm_e_trains_one_segment_per_declared_phase(subset_dirs):
+    calls: list = []
+    out = run(subset_args(subset_dirs, "E"), after_phase=hooks.identity_after_phase, evaluate_all=nan_outside(calls))
+    m = matrix_of(out)
+    filled = [i for i in range(N_PHASES) if m["M"]["cloze"][i] != [None] * N_PHASES]
+    assert filled == [0, 3, 6]
+    assert len(calls) == 1 + 3  # the untrained row, then one row per segment
+
+
+def test_a_subset_resume_continues_at_the_next_declared_phase(subset_dirs):
+    straight = run(subset_args(subset_dirs, "E", out=subset_dirs["results"] / "straight"), **HOOKS)
+    broken = subset_dirs["results"] / "broken"
+    with pytest.raises(KeyboardInterrupt):
+        run(
+            subset_args(subset_dirs, "E", out=broken),
+            after_phase=KillAfterPhase(6),
+            evaluate_all=fake_evaluate_all,
+        )
+    assert load_state(state_path(broken)).completed_phase == 3
+    resumed = run(subset_args(subset_dirs, "E", out=broken, resume=True), **HOOKS)
+    assert matrix_of(resumed) == matrix_of(straight)
+
+
+def test_a_declared_phase_missing_from_disk_refuses_through_the_entry_point(tmp_path):
+    from tests.conftest import write_exam_dir, write_manifest, write_train_dir
+    from training.data import DataError
+
+    exam = write_exam_dir(tmp_path / "exam")
+    dirs = {
+        "train": write_train_dir(tmp_path / "train", phases=(0, 6)),
+        "exam": exam,
+        "manifest": write_manifest(tmp_path / "manifest.json", exam),
+        "results": tmp_path / "results",
+        "shared": tmp_path / "shared",
+    }
+    with pytest.raises(DataError, match=r"missing training file for phase 3 \(declared phases \[0, 3, 6\]\)"):
+        run(subset_args(dirs, "E"), **HOOKS)
+
+
+def test_a_0_3_6_corpus_without_a_declaration_still_refuses(subset_dirs):
+    from training.data import DataError
+
+    with pytest.raises(DataError, match="missing training file for phase 1: "):
+        run(toy_args(subset_dirs, "E"), **HOOKS)
+
+
+def test_a_default_run_declares_all_seven_and_its_config_hash_is_unchanged(toy_dirs):
+    """The full run is untouched: no `phases` attribute, `None` and an explicit
+    0..6 all resolve to the same settings and the same config digest, which is
+    the one every shared init and phase-0 checkpoint is keyed on. A subset
+    run's digest differs, so it can never pick up a full run's phase 0."""
+    from training.train import _config_digest
+
+    bare = toy_args(toy_dirs, "A")
+    assert not hasattr(bare, "phases")
+    explicit_none = toy_args(toy_dirs, "A")
+    explicit_none.phases = None
+    all_seven = toy_args(toy_dirs, "A")
+    all_seven.phases = tuple(range(N_PHASES))
+    subset = subset_args(toy_dirs, "A")
+
+    digests = []
+    for args in (bare, explicit_none, all_seven):
+        s = Settings(args)
+        assert s.phases == tuple(range(N_PHASES)) and not s.subset
+        digests.append(_config_digest(s.train_cfg, s))
+    assert len(set(digests)) == 1
+    s = Settings(subset)
+    assert s.subset and _config_digest(s.train_cfg, s) != digests[0]
+
+    out = run(toy_args(toy_dirs, "E"), **HOOKS)
+    cfg = config_of(out)
+    assert cfg["phases"] == list(range(N_PHASES)) and cfg["subset_phases"] is False
+    assert [r["phase"] for r in cfg["token_budget"]["per_phase"]] == list(range(N_PHASES))
+
+
+def test_the_cli_takes_a_comma_separated_phase_list():
+    parser = build_parser()
+    base = ["--arm", "A", "--seed", "0", "--train-dir", "t", "--exam-dir", "e", "--out", "o"]
+    assert parser.parse_args(base).phases is None
+    assert parser.parse_args(base + ["--phases", "0,3,6"]).phases == (0, 3, 6)
+    for bad in ("3,6", "0,6,3", "0,3,3", "0,7", "0,x", ""):
+        with pytest.raises(SystemExit):
+            parser.parse_args(base + ["--phases", bad])
