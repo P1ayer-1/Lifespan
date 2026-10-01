@@ -764,3 +764,50 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   EXPERIMENT_ID defaults to "lifespan-main" (agent's choice, awaiting the
   lead). The Kaggle notebook does not yet pass --manifest, --phases or
   --experiment-id, so it cannot launch the pre-pilot as is.
+
+## 2026-09-30 — pre-pilot exams generated, reviewed and frozen
+
+- **Experiment ids:** the 0/3/6 pre-pilot is `lifespan-prepilot` (its own
+  manifest and seed 4243, never committed as exams/manifest.json); the main
+  experiment keeps `training.config.EXPERIMENT_ID = "lifespan-main"` (owner,
+  2026-09-30: "do all the things"). The Kaggle notebook passes `--manifest`,
+  `--phases`, `--experiment-id` when set (499b3ad); the pre-pilot values are
+  in its parameter cell.
+- **Exams:** 120 exam prompts per phase (split exam, seed 4243, same tiers as
+  training: 0 / 7-9 / 13), generated with the training model, every story
+  through both Opus gates (reviewers report counts only; no exam text left
+  D:\Lifespan\exams_prepilot). Pass both: phase 0 110/120, phase 3 99/120 ->
+  114 after one regeneration round of its 20 failures, phase 6 101/120 (one
+  excluded for stray CJK text). 100 per phase selected by a seeded shuffle
+  (4243+phase), the rest kept as an ordered reserve (unused).
+- **Freeze** (exam-keeper, 2026-09-30T23:58Z; manifest sha256 415aa98a...,
+  generator commit c936e968): near-duplicate check of all exam candidates
+  against all 2,939 training stories flagged 0 (max containment 0.106 / 0.048
+  / 0.028 vs threshold 0.5). Probes, seed 4243: cloze 100/99/99 and
+  continuation 96/100/100 (phase 0 has 4 single-paragraph stories);
+  verify_probes passes; answer slots uniform; masked word never visible;
+  length ratio true/mean-distractor 0.94 / 1.12 / 1.13. Replay buffers 100
+  per phase (10%, the grid's ratio; unused by phase0/A/E). guard.check and
+  evaluate.verify_exam_stories pass on D:\Lifespan\prepilot_train and the
+  exam dir; "lifespan-main" and a missing id are refused.
+- **Accepted for the pre-pilot only** (a sanity check, never an H1 verdict;
+  each is to be revisited before the main exam freeze): (1) a mild length
+  giveaway in continuation (longest option right 0.30 / 0.35 at phases 3/6,
+  shortest 0.18 at phase 0, vs 0.25 chance); (2) item counts 1-4 under 100
+  in three probe files; (3) cloze candidates mix parts of speech (~34% share
+  the answer's); (4) replay size 100/phase; (5) tier 0's same-phase verbatim
+  overlap with its training set (8-gram 0.0098, 35% of exam stories share a
+  sentence, mostly ~7-word ones) is higher than phases 3 and 6 (0.0053 /
+  0.0056), so DECISIONS 2026-09-25's "comparable" check is not met; only 8 of
+  the 38 shared sentences match a fact-bank 6-gram.
+- **Found on the way:** the phase-3 fact "Ted Williams ... last MLB player
+  above .400" is outdated since MLB added Negro league statistics (May 2024;
+  Josh Gibson .466, 1943); the bank verifier had passed it. Retired via
+  revisions3.json, its 2 training stories dropped (phase 3 corpus 970;
+  curriculum-learning 3c4b395); the installed prompt config keeps the old
+  bank until the next template change so committed prompt hashes stay valid.
+  And the corpus registry lost entries when generation runs ran in parallel
+  (last save won); it now merges under a lock (f546ccd), entries restored.
+- **To launch:** upload D:\Lifespan\prepilot_train and the exam dir as two
+  private Kaggle datasets keeping their subfolders (replay/, stories/,
+  probes/), set the notebook's three pre-pilot variables, owner's go.
