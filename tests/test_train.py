@@ -1121,3 +1121,55 @@ def test_the_tokenizer_is_given_the_declared_phases_only_in_subset_mode(toy_dirs
     args = subset_args(toy_dirs, "E") if subset else toy_args(toy_dirs, "E")
     run(args, **HOOKS)
     assert seen == [(0, 3, 6) if subset else None]
+
+
+# ---------------------------------------------------------------------------
+# --micro-batch: gradient accumulation is memory only
+
+
+def _toy_steps(micro_batch):
+    from training.model import build_model
+    from training.train import train_one_phase
+
+    g = torch.Generator().manual_seed(0)
+    model = build_model(TOY, g)
+    data_g = torch.Generator().manual_seed(1)
+    batches = [torch.randint(0, TOY.vocab_size, (6, TOY.block_size + 1), generator=data_g) for _ in range(3)]
+    optimizer = model.configure_optimizers(1e-3, 0.1, (0.9, 0.95), "cpu")
+    stats = train_one_phase(
+        model,
+        optimizer,
+        torch.amp.GradScaler("cpu", enabled=False),
+        new_loader=batches,
+        replay_loader=iter(()),
+        steps=3,
+        base_lr=1e-3,
+        warmup=1,
+        grad_clip=1.0,
+        device=torch.device("cpu"),
+        amp_dtype=None,
+        log=lambda _msg: None,
+        micro_batch=micro_batch,
+    )
+    return stats, {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+
+@pytest.mark.parametrize("micro_batch", [1, 4, 6, 100])
+def test_micro_batch_matches_whole_batch(micro_batch):
+    """Uneven chunks (6 rows by 4) included: same losses, same weights up to
+    summation order (Adam amplifies it on near-zero gradients, hence atol)."""
+    whole_stats, whole = _toy_steps(None)
+    stats, weights = _toy_steps(micro_batch)
+    assert stats["steps"] == whole_stats["steps"] == 3
+    assert stats["new_sequences"] == whole_stats["new_sequences"] == 18
+    assert math.isclose(stats["last_loss"], whole_stats["last_loss"], rel_tol=1e-5)
+    for key, value in whole.items():
+        torch.testing.assert_close(weights[key], value, rtol=1e-4, atol=1e-5)
+
+
+def test_micro_batch_flag_parses_and_rejects_zero():
+    base = ["--arm", "A", "--seed", "0", "--train-dir", "t", "--exam-dir", "e", "--out", "o"]
+    assert build_parser().parse_args(base).micro_batch is None
+    assert build_parser().parse_args([*base, "--micro-batch", "8"]).micro_batch == 8
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([*base, "--micro-batch", "0"])

@@ -350,12 +350,19 @@ def train_one_phase(
     device: torch.device,
     amp_dtype: torch.dtype | None,
     log: Callable[[str], None],
+    micro_batch: int | None = None,
 ) -> dict:
     """The identical inner loop for every arm.
 
     Replay is *on top*: the new-phase rows of a batch are exactly the rows a
     replay-free arm would have seen at the same step, and the step count and the
     schedule do not know replay exists.
+
+    `micro_batch` splits each batch into chunks of that many rows and
+    accumulates their gradients before the one optimiser step: memory only.
+    Each chunk's mean loss is weighted by its share of the rows, and every row
+    has the same token count, so the summed gradient is the full batch's mean
+    gradient (dropout is 0). None runs the batch in one piece.
     """
     model.train()
     replay_iter = iter(replay_loader)
@@ -374,9 +381,16 @@ def train_one_phase(
             group["lr"] = lr
 
         x, y = shift_for_lm(batch)
-        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
-            _, loss = model(x, y)
-        scaler.scale(loss).backward()
+        n_rows = int(x.shape[0])
+        chunk = micro_batch or n_rows
+        step_loss = 0.0
+        for lo in range(0, n_rows, chunk):
+            xs, ys = x[lo : lo + chunk], y[lo : lo + chunk]
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
+                _, loss = model(xs, ys)
+            part = loss * (xs.shape[0] / n_rows) if chunk < n_rows else loss
+            scaler.scale(part).backward()
+            step_loss += float(part.detach())
         if grad_clip > 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(
@@ -385,7 +399,7 @@ def train_one_phase(
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
-        losses.append(float(loss.detach()))
+        losses.append(step_loss)
         if step == 0 or (step + 1) % max(1, steps // 4) == 0:
             log(f"    step {step + 1}/{steps} lr {lr:.2e} loss {losses[-1]:.4f}")
     return {
@@ -508,6 +522,8 @@ def run(
         "toy": settings.toy,
         "precision": precision,
         "device": str(device),
+        #: --micro-batch: gradient accumulation chunk, memory only (None = whole batch).
+        "micro_batch": getattr(args, "micro_batch", None),
         "model": asdict(settings.model_cfg),
         "n_parameters": sum(settings.model_cfg.n_params()),
         "n_parameters_nonembedding": settings.model_cfg.n_params()[0],
@@ -716,6 +732,7 @@ def run(
                     device=device,
                     amp_dtype=amp_dtype,
                     log=record.log,
+                    micro_batch=getattr(args, "micro_batch", None),
                 )
             record.log(
                 f"  {label} done: loss {stats['first_loss']:.4f} -> {stats['last_loss']:.4f}, "
@@ -891,6 +908,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--cpu", action="store_true", help="force CPU even where CUDA exists")
     p.add_argument(
+        "--micro-batch",
+        type=_positive_int,
+        default=None,
+        help=(
+            "rows per forward/backward; gradients accumulate to the full batch before each "
+            "optimiser step. Memory only, never a hyperparameter: the batch, steps and lr "
+            "schedule are unchanged. Default: the whole batch at once."
+        ),
+    )
+    p.add_argument(
         "--phases",
         type=parse_phases,
         default=None,
@@ -910,6 +937,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     return p
+
+
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
 
 
 def parse_phases(text: str) -> tuple[int, ...]:

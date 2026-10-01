@@ -811,3 +811,25 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
 - **To launch:** upload D:\Lifespan\prepilot_train and the exam dir as two
   private Kaggle datasets keeping their subfolders (replay/, stories/,
   probes/), set the notebook's three pre-pilot variables, owner's go.
+
+## 2026-09-30 — `--micro-batch`: gradient accumulation after a T4 OOM
+
+- **Measured:** the first Kaggle pre-pilot launch (arm phase0, T4, 14.56 GiB)
+  ran out of CUDA memory at 13.38 GiB allocated, failing a 1 GiB request: the
+  float32 logits of one 32 x 1,024 x 8,192 batch. The model is ~25M
+  parameters; the activations of the full 32-sequence batch are the cost.
+  The run used one GPU; the session's second T4 was idle.
+- **Decided:** an additive flag, `--micro-batch N`, splits each batch into
+  chunks of N rows and accumulates gradients before the single optimiser step.
+  Each chunk's mean loss is weighted by its row share; rows have equal token
+  counts and dropout is 0, so the step equals the whole-batch step up to
+  float summation order. Batch, steps, lr schedule and replay share are
+  unchanged: memory only, never a hyperparameter. Recorded in config.json as
+  `micro_batch`. tests/test_train.py checks losses and weights against the
+  whole batch on the toy model (chunks 1, 4 of 6, 6, 100). The notebook sets
+  MICRO_BATCH = 8 and PYTORCH_ALLOC_CONF=expandable_segments:True.
+- **Not covered:** consolidate.py's LoRA/distillation loops (arms C, D, D-nr)
+  still run whole batches; they are not in the pre-pilot and hold teacher and
+  student logits, so they need the same change before the grid. Multi-GPU
+  (DDP) is not used; a cheaper use of a second GPU is running two
+  independent arms at once (e.g. E beside phase0).
