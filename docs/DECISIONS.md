@@ -919,3 +919,41 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   scored under different rules are refused rather than pooled.
 - **Next:** re-run phase0, A and E at the new commit (the commit is in the
   shared-checkpoint fingerprint, and E's result was never pushed).
+
+## 2026-10-01 — pre-pilot complete (phase0, A, E at 4f769a2): continuation with cross-phase distractors is register discrimination under any scoring
+
+- **Runs** (seed 0, T4 fp16, micro-batch 8, PMI headline): phase0
+  phase0_s0_4f769a2_20261001T173103Z, A A_s0_4f769a2_20261001T174050Z
+  (0.194 GPU-h), E E_s0_4f769a2_20261001T175434Z (0.195 GPU-h). All three
+  pass results/validate.py; commit.txt dirty false. A's loss and cloze
+  reproduce the 2c183f8 run to the third decimal across two Kaggle sessions,
+  and its PMI continuation equals the local CPU re-score exactly.
+- **Measured, phase-0 exam after phase 6, A vs E:** loss 5.37 vs 4.34; cloze
+  0.35 vs 0.55; continuation (PMI, cross-phase distractors) 0.146 vs 0.917.
+  A right after phase 0 scores 0.167 on the same item, before anything
+  could be forgotten.
+- **Test:** the same items re-scored locally with distractors drawn from
+  other stories of the SAME phase (seeded, same length band; built in memory,
+  never written; accuracies only). PMI accuracy p0 / p3 / p6 (chance 0.25):
+  untrained 0.208 / 0.250 / 0.150; after p0 0.208 / 0.260 / 0.250; A after
+  p6 0.281 / 0.250 / 0.370; E after p6 0.312 / 0.380 / 0.330. Raw summed
+  scoring is 0.10-0.15 throughout (useless).
+- **Reading:** E's 0.917 falls to 0.312: with other phases' paragraphs as
+  distractors, PMI rewards matching the prefix's register, which needs a
+  model that knows several registers. A sequential arm at row i knows one,
+  so its diagonal sits at chance however well it learned the phase, and
+  "forgetting" (peak minus final) cannot be read from it. Amendment 4 fixed
+  the below-chance artefact but not this. With same-phase distractors the
+  item asks only whether the option follows this story; at pilot scale every
+  model is near chance there (best 0.37-0.38, ~2.8 sd).
+- **And:** by every measure that can register learning (loss, cloze,
+  same-phase continuation), arm A does not forget phase 0 at pilot scale; its
+  phase-0 cloze rises 0.26 -> 0.30 -> 0.35 and its loss improves 5.71 ->
+  5.37 while it trains on phases 3 and 6. The model is far from fitting any
+  phase (final train loss ~4.96), so later phases still teach general
+  English that helps phase 0. A pre-pilot is never an H1 verdict, but this
+  is H1's kill direction.
+- **Open, owner's decision:** (1) continuation distractors from the same
+  phase (probe rebuild and a new freeze; stories unchanged), keeping PMI;
+  (2) what the pilot needs for forgetting to be measurable at all: more
+  steps per phase, the 5,000-story sizes, or phases that differ more.
