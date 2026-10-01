@@ -18,7 +18,9 @@ Frozen contract (AGENTS.md, 2026-09-21 and amendment 2, 2026-09-22):
     continuation: {id, phase, prefix, options: [4], answer_index,
                    distractor_phases: [3],
                    option_sources: [{story_id, story_sha256, phase} x4]}
-      distractors from other phases' exam stories only, never the same story.
+      distractors from OTHER STORIES OF THE SAME PHASE (Amendment 5,
+      owner 2026-10-01; until then other phases'), never the answer's story,
+      three distinct stories.
 
 How items are made (fixed here, the same for every phase):
 
@@ -32,11 +34,10 @@ How items are made (fixed here, the same for every phase):
 * **continuation** -- a story is split into paragraphs (blank lines; single
   newlines if it has no blank line). A split point i in 1..len-1 is drawn;
   `prefix` is paragraphs[:i] joined and followed by the separator, the answer
-  is paragraph i. Three distractor phases are drawn from the other phases
-  (with fewer than three other phases, as in a 0/3/6 exam, the three are
-  spread over them as evenly as possible, from different stories where
-  possible; owner, 2026-09-30); from each, one non-opening paragraph of one
-  exam story, preferring
+  is paragraph i. The three distractors are non-opening paragraphs of three
+  other exam stories of the SAME phase (AGENTS.md Amendment 5, 2026-10-01:
+  with other phases' paragraphs the item asked which phase's register the
+  model knows, not whether the option follows this story), preferring
   paragraphs whose length is within `LENGTH_BAND` (0.5x-2x) of the answer's,
   so length is not a giveaway. `answer_index` is balanced over the four slots
   (a seeded shuffle of 0,1,2,3,0,1,2,3,...).
@@ -47,7 +48,8 @@ source story -- the hash the manifest's `stories` entries carry -- and
 
 `verify_probes` is the freeze-time assertion amendment 2 requires: every
 option's source hash is an exam story in the manifest (with that phase) and in
-no training file, no distractor shares the item's phase or story, and
+no training file, every distractor is from the item's phase but not the
+answer's story (three distinct stories), and
 `distractor_phases` is non-empty and matches the sources. `giveaway_report`
 gives the numbers exam-keeper reports (length ratio, answer slot histogram,
 masked word visible elsewhere). Neither prints text.
@@ -225,23 +227,6 @@ def build_cloze(
 # --------------------------------------------------------------------------- #
 
 
-def _distractor_phases(others: Sequence[int], rng: random.Random) -> list[int]:
-    """The phases the three distractors come from, never the item's own.
-
-    With at least three other phases: three distinct ones, drawn exactly as
-    before (so a full 0..6 exam is byte-identical). With fewer (the 0/3/6
-    pre-pilot; owner, 2026-09-30): the three are spread over the other phases
-    as evenly as possible (2+1 for two, 3 for one) in a seeded order, so the
-    item keeps four options and chance stays 1/4.
-    """
-    if len(others) >= N_DISTRACTORS:
-        return rng.sample(list(others), N_DISTRACTORS)
-    k, extra = divmod(N_DISTRACTORS, len(others))
-    phases = list(others) * k + rng.sample(list(others), extra)
-    rng.shuffle(phases)
-    return phases
-
-
 def build_continuation(
     stories_by_phase: Mapping[int, Sequence[Mapping]],
     seed: int,
@@ -250,7 +235,7 @@ def build_continuation(
     """Continuation items per phase. `n_per_phase=None` makes one per story
     with at least two paragraphs."""
     _check_phase_rows(stories_by_phase)
-    # every phase's non-opening paragraphs: the distractor pool
+    # every phase's non-opening paragraphs: the phase's own distractor pool
     pool: dict[int, list[tuple[Mapping, str]]] = {}
     for phase in sorted(stories_by_phase):
         entries = []
@@ -261,12 +246,6 @@ def build_continuation(
 
     out: dict[int, list[dict]] = {}
     for phase in sorted(stories_by_phase):
-        others = [p for p in sorted(pool) if p != phase and pool[p]]
-        if not others:
-            raise ProbeError(
-                f"phase {phase}: distractors need at least one other phase with multi-paragraph "
-                f"exam stories, found none"
-            )
         rng = derive_rng(seed, "continuation", phase)
         rows = [r for r in _sorted_stories(stories_by_phase[phase]) if len(split_paragraphs(r["story"])[0]) >= 2]
         rng.shuffle(rows)
@@ -285,19 +264,19 @@ def build_continuation(
             cut = rng.randrange(1, len(paras))
             prefix = sep.join(paras[:cut]) + sep
             answer = paras[cut]
-            dphases = _distractor_phases(others, rng)
             distractors: list[tuple[Mapping, str]] = []
-            for dp in dphases:
-                lo, hi = LENGTH_BAND[0] * len(answer), LENGTH_BAND[1] * len(answer)
-                usable = [(r, p) for r, p in pool[dp] if p != answer and all(p != d for _, d in distractors)]
-                # Two distractors from one phase (a subset exam) come from two
-                # stories where possible; with one per phase this is a no-op.
-                used = {story_id_of(r) for r, _ in distractors}
-                fresh = [(r, p) for r, p in usable if story_id_of(r) not in used] or usable
+            lo, hi = LENGTH_BAND[0] * len(answer), LENGTH_BAND[1] * len(answer)
+            for _ in range(N_DISTRACTORS):
+                # Same phase, never the answer's story, three distinct stories.
+                used = {story_id_of(row)} | {story_id_of(r) for r, _ in distractors}
+                fresh = [(r, p) for r, p in pool[phase] if story_id_of(r) not in used and p != answer]
                 banded = [(r, p) for r, p in fresh if lo <= len(p) <= hi]
                 choice_from = banded or fresh
                 if not choice_from:
-                    raise ProbeError(f"phase {phase}: no distractor paragraph left in phase {dp}")
+                    raise ProbeError(
+                        f"phase {phase}: fewer than {N_DISTRACTORS + 1} exam stories with a "
+                        f"non-opening paragraph; a distractor needs another story of this phase"
+                    )
                 distractors.append(choice_from[rng.randrange(len(choice_from))])
 
             options: list[str] = []
@@ -417,10 +396,15 @@ def verify_probes(
                 raise ProbeError(f"continuation {iid}: the answer's source is phase {ans['phase']}, not {phase}")
             dist = [s for i, s in enumerate(sources) if i != k]
             for s in dist:
-                if s["phase"] == phase:
-                    raise ProbeError(f"continuation {iid}: a distractor comes from the item's own phase")
+                if s["phase"] != phase:
+                    raise ProbeError(
+                        f"continuation {iid}: a distractor comes from phase {s['phase']}, not the "
+                        f"item's own phase {phase} (Amendment 5)"
+                    )
                 if s["story_id"] == ans["story_id"]:
                     raise ProbeError(f"continuation {iid}: a distractor comes from the answer's story")
+            if len({s["story_id"] for s in dist}) != len(dist):
+                raise ProbeError(f"continuation {iid}: two distractors come from one story")
             dp = item.get("distractor_phases")
             if not dp:
                 raise ProbeError(f"continuation {iid}: distractor_phases is empty")

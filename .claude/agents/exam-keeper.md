@@ -29,8 +29,9 @@ frozen versions; those win).
   - Lexicon cloze: an exam story with one phase-lexicon word masked; candidates
     are that phase's lexicon; one correct answer.
   - Continuation choice: a prefix, the true next paragraph, three distractors
-    taken from **other phases' exam stories**, never from training stories and
-    never from the same story.
+    taken from **three other exam stories of the same phase** (AGENTS.md
+    Amendment 5, 2026-10-01; other phases' until then), never from training
+    stories and never from the answer's story.
   Seeded. Same exam stories and seed, same probes, byte for byte.
 - **`exams/manifest.json`** in the Lifespan repo: SHA-256 of every exam file,
   generator commit, seed, config hashes, near-duplicate counts. Hashes only.

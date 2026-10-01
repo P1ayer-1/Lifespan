@@ -339,7 +339,8 @@ evaluate_all_detailed(... same ...) -> EvalResult
 #   model exists, and records the counts in config.json
 #   "manifest": {"exam_stories_verified": {phase: n}}.
 
-# Continuation distractors on a subset exam (owner, 2026-09-30)
+# Continuation distractors on a subset exam (owner, 2026-09-30; superseded by
+# Amendment 5, 2026-10-01: distractors now come from the item's own phase)
 #   An item always has 4 options (chance 1/4) and 3 distractors, none from the
 #   item's own phase. With >= 3 other exam phases the 3 come from 3 distinct
 #   phases (unchanged; a full 0..6 exam is byte-identical). With fewer (the
@@ -368,6 +369,30 @@ changed; the scoring is.
 #   probe files and the manifest are unchanged. A matrix scored before this
 #   amendment is not comparable on "continuation" and is never pooled with one
 #   scored after it.
+```
+
+### Amendment 5 — owner, 2026-10-01: continuation distractors come from the item's own phase
+
+PMI (Amendment 4) removed the below-chance artefact but not the confound: with
+other phases' paragraphs as distractors the item asks whether the model can
+tell the prefix's register from the others', which a sequential arm at row i
+(one register known) cannot do however well it learned phase i. Arm A scored
+0.167 on phase 0 right after training it; arm E, which knows all three
+registers, 0.917. Re-scored with same-phase distractors E fell to 0.312
+(`docs/DECISIONS.md`, 2026-10-01).
+
+```text
+# [replaces "distractors from other phases' exam stories" (2026-09-21) and the
+#   subset-exam spreading rule of 2026-09-30] A continuation item's three
+#   distractors are non-opening paragraphs of three OTHER exam stories of the
+#   item's own phase: never the answer's story, three distinct stories, length
+#   band as before. distractor_phases is therefore [k, k, k]. verify_probes and
+#   evaluate.validate_continuation_item refuse a distractor from another phase
+#   and two distractors from one story. A phase needs >= 4 exam stories with a
+#   non-opening paragraph. A subset exam's items for phase k are identical to a
+#   full exam's. Stories, cloze and the manifest format are unchanged; the
+#   continuation probe files, and so the manifest, are new: a new freeze under
+#   a new experiment id, never pooled with matrices from the old probes.
 ```
 
 ## Waves

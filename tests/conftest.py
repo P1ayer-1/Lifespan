@@ -154,12 +154,14 @@ def write_scoreable_exam_dir(root: Path, n_phases: int = N_PHASES, items_per_typ
 
         return story_sha256(story_text(phase, i))
 
+    # A continuation item's distractors are three OTHER stories of its own
+    # phase (AGENTS.md Amendment 5), so every phase has at least four stories.
+    n_stories = max(items_per_type, 4)
     for k in range(n_phases):
         letter = phase_letter(k)
-        other = (k + 1) % n_phases
         rows = [
             {"id": story_id(k, i), "phase": k, "story": story_text(k, i)}
-            for i in range(items_per_type)
+            for i in range(n_stories)
         ]
         (stories_dir / f"exam_phase_{k}.jsonl").write_text(
             _jsonl(rows), encoding="utf-8"
@@ -181,24 +183,23 @@ def write_scoreable_exam_dir(root: Path, n_phases: int = N_PHASES, items_per_typ
 
         cont = []
         for i in range(items_per_type):
-            distractor_phases = [(k + 1 + d) % n_phases for d in range(3)]
-            # never the item's own phase, so the probe stays a phase test
-            distractor_phases = [p if p != k else other for p in distractor_phases]
+            others = [(i + 1 + d) % n_stories for d in range(3)]
+            distractor_phases = [k, k, k]
             cont.append(
                 {
                     "id": f"cont_{k}_{i}",
                     "phase": k,
                     "prefix": f"once upon a time in phase {letter}, ",
                     "options": [f"{letter * 2} the true continuation {i}."]
-                    + [f"{phase_letter(p)}{phase_letter(p)} a continuation from elsewhere." for p in distractor_phases],
+                    + [f"{letter * 2} a continuation from story {j}." for j in others],
                     "answer_index": 0,
                     "distractor_phases": distractor_phases,
-                    # amendment 2: the answer's source is this phase; no
-                    # distractor shares the item's phase or the answer's story.
+                    # amendments 2 and 5: every option is from this phase, each
+                    # distractor from another story than the answer's.
                     "option_sources": [{"story_id": story_id(k, i), "story_sha256": story_sha(k, i), "phase": k}]
                     + [
-                        {"story_id": story_id(p, i), "story_sha256": story_sha(p, i), "phase": p}
-                        for p in distractor_phases
+                        {"story_id": story_id(k, j), "story_sha256": story_sha(k, j), "phase": k}
+                        for j in others
                     ],
                 }
             )
@@ -511,16 +512,12 @@ def _write_probe_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def option_sources(phase: int, item: int, n_options: int, answer_index: int) -> list[dict]:
-    """`option_sources` for a synthetic continuation item: the answer drawn from
-    this phase, every distractor from another one, ids and hashes invented."""
+    """`option_sources` for a synthetic continuation item: every option from
+    this phase (AGENTS.md Amendment 5), each from its own story, ids and hashes
+    invented."""
     out = []
     for i in range(n_options):
-        if i == answer_index:
-            src_phase = phase
-        else:
-            src_phase = (phase + 1 + i) % N_PHASES
-            if src_phase == phase:
-                src_phase = (phase + 1) % N_PHASES
+        src_phase = phase
         out.append(
             {
                 "story_id": f"story_{src_phase}_{item}_{i}",

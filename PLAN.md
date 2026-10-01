@@ -202,7 +202,7 @@ in the loop.
 | --- | --- | --- | --- |
 | Held-out perplexity | 500 exam stories per phase | Mean per-token loss | Broad drift; the continuous signal for the forgetting curve |
 | Lexicon cloze | Exam stories with a phase-lexicon word masked | Rank-1 accuracy of the true word among the phase's lexicon | Whether the phase's vocabulary survives |
-| Continuation choice | A story prefix plus the true next paragraph and three distractors from other phases' stories | Accuracy: true continuation has the highest log-likelihood | Whether the phase's reasoning level and tone survive |
+| Continuation choice | A story prefix plus the true next paragraph and three distractors from other stories of the same phase (owner, 2026-10-01; other phases' until then, which measured register) | Accuracy: true continuation has the highest log-likelihood | Whether the phase's reasoning level and tone survive |
 | Judge grade (secondary, optional) | 100 generated stories per phase, graded by an LLM for age-appropriateness and coherence | 1–10 | Sanity check on generation quality only; noisy, never a hypothesis metric |
 
 Each run produces a 7 x 7 matrix M where M[i][j] is the accuracy on phase j's
@@ -263,8 +263,8 @@ pipeline and a few fixes before week 1 ends.
       from tier-appropriate texts before generating those phases, or the later
       prompts will carry early-phase vocabulary.
 - [ ] Exam probe builder: from the exam stories, produce the lexicon-cloze and
-      continuation-choice items (distractors sampled from other phases' exam
-      stories, never training stories).
+      continuation-choice items (distractors sampled from other exam stories
+      of the same phase since 2026-10-01, never training stories).
 - [ ] A `training/` package, separate from `dataset_generation/`: tokenizer
       training, model definition, the arm-flagged training loop, LoRA and
       consolidation, evaluation, and a Kaggle notebook that calls it and

@@ -315,12 +315,12 @@ def a_continuation_item(**overrides) -> dict:
         "id": "k0", "phase": 2, "prefix": "q",
         "options": ["xxxx", "y", "yy", "zz"],
         "answer_index": 0,
-        "distractor_phases": [3, 4, 5],
+        "distractor_phases": [2, 2, 2],
         "option_sources": [
             {"story_id": "s_true", "story_sha256": "a" * 64, "phase": 2},
-            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 3},
-            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 4},
-            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 5},
+            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 2},
+            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 2},
+            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 2},
         ],
     }
     item.update(overrides)
@@ -360,36 +360,37 @@ def test_an_item_missing_option_sources_is_refused(tmp_path):
         # one source short of one per option
         ({"option_sources": [
             {"story_id": "s_true", "story_sha256": "a" * 64, "phase": 2},
-            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 3},
-            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 4},
+            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 2},
+            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 2},
         ]}, "one per option is required"),
         # an entry missing a required field
         ({"option_sources": [
             {"story_id": "s_true", "phase": 2},
-            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 3},
-            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 4},
-            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 5},
+            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 2},
+            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 2},
+            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 2},
         ]}, "missing story_sha256"),
         # the true continuation did not come from this phase
         ({"option_sources": [
             {"story_id": "s_true", "story_sha256": "a" * 64, "phase": 6},
-            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 3},
-            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 4},
-            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 5},
+            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 2},
+            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 2},
+            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 2},
         ]}, "the answer option's source phase"),
-        # THE FINDING: a distractor drawn from the item's own phase
+        # Amendment 5: a distractor drawn from another phase (until 2026-10-01
+        # the rule was the reverse; then the item measured register)
         ({"option_sources": [
             {"story_id": "s_true", "story_sha256": "a" * 64, "phase": 2},
-            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 2},
-            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 4},
-            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 5},
-        ]}, "drawn from the item's own phase"),
+            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 3},
+            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 2},
+            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 2},
+        ]}, "must come from the item's own phase"),
         # a distractor excerpted from the answer's own story
         ({"option_sources": [
             {"story_id": "s_true", "story_sha256": "a" * 64, "phase": 2},
-            {"story_id": "s_true", "story_sha256": "b" * 64, "phase": 3},
-            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 4},
-            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 5},
+            {"story_id": "s_true", "story_sha256": "b" * 64, "phase": 2},
+            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 2},
+            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 2},
         ]}, "shares the answer's source story"),
     ],
 )
@@ -402,7 +403,7 @@ def test_provenance_errors_never_carry_exam_text():
     """A traceback ends up in a Kaggle notebook's output, so an error message
     carries ids, phases and hashes and never a prefix or an option."""
     item = a_continuation_item(prefix="SECRET PREFIX", options=["SECRET OPTION A"] * 4)
-    item["option_sources"][1]["phase"] = 2
+    item["option_sources"][1]["phase"] = 3
     with pytest.raises(ValueError) as exc:
         validate_continuation_item(item)
     assert "SECRET" not in str(exc.value)
@@ -412,7 +413,7 @@ def test_provenance_errors_never_carry_exam_text():
 # option_sources hashes are checked against the exam's per-story hashes
 # (leakage audit 2026-09-25, should-fix: they were self-attested).
 
-KNOWN = {"a" * 64: 2, "b" * 64: 3, "c" * 64: 4, "d" * 64: 5}
+KNOWN = {"a" * 64: 2, "b" * 64: 2, "c" * 64: 2, "d" * 64: 2}
 
 
 def test_option_sources_whose_hashes_are_exam_stories_pass():
@@ -433,9 +434,9 @@ def test_a_distractor_whose_hash_is_in_no_manifest_is_refused():
 
 def test_a_source_claiming_the_wrong_phase_for_its_story_is_refused():
     item = a_continuation_item()
-    item["option_sources"][3]["story_sha256"] = "c" * 64  # a phase-4 story, claimed as 5
-    with pytest.raises(ValueError, match="claims phase 5 but story c{64} is an exam story of phase 4"):
-        validate_continuation_item(item, KNOWN)
+    item["option_sources"][3]["story_sha256"] = "e" * 64  # a phase-4 story, claimed as 2
+    with pytest.raises(ValueError, match="claims phase 2 but story e{64} is an exam story of phase 4"):
+        validate_continuation_item(item, {**KNOWN, "e" * 64: 4})
 
 
 def test_the_hook_checks_option_sources_against_the_exam_stories_by_default(tmp_path):
@@ -443,7 +444,7 @@ def test_the_hook_checks_option_sources_against_the_exam_stories_by_default(tmp_
     so the check cannot be switched off by forgetting an argument."""
     exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=2, n_probes=2)
     known = exam_story_phases(exam_dir)
-    assert len(known) == 2 * N_PHASES
+    assert len(known) == 4 * N_PHASES  # at least 4 stories a phase (Amendment 5)
     evaluate_all(TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG)  # clean passes
 
     path = exam_dir / "probes" / "continuation_phase_0.jsonl"
@@ -455,9 +456,6 @@ def test_the_hook_checks_option_sources_against_the_exam_stories_by_default(tmp_
     # an explicit hash map (the manifest's, via the guard report) is used as given
     with pytest.raises(ValueError, match="is not the hash of any exam story"):
         evaluate_all(TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG, story_hashes=known)
-    evaluate_all(
-        TinyBigramLM(), exam_dir, [0], tokenizer=TOK, cfg=CFG, story_hashes={**known, "f" * 64: 1}
-    )
 
 
 def test_an_exam_dir_without_stories_cannot_vouch_for_option_sources(tmp_path):
@@ -485,7 +483,7 @@ def test_an_exam_matching_the_manifest_verifies_and_scores(tmp_path):
 
     exam_dir = write_synthetic_exam_dir(tmp_path / "exams", n_stories=2, n_probes=2)
     frozen = _manifest_map(exam_dir)
-    assert verify_exam_stories(exam_dir, frozen, range(N_PHASES)) == {k: 2 for k in range(N_PHASES)}
+    assert verify_exam_stories(exam_dir, frozen, range(N_PHASES)) == {k: 4 for k in range(N_PHASES)}  # >= 4 stories, Amendment 5
     evaluate_all(TinyBigramLM(), exam_dir, [0, 3], tokenizer=TOK, cfg=CFG, story_hashes=frozen)
 
 
@@ -501,7 +499,7 @@ def test_a_crlf_or_reindented_copy_still_matches(tmp_path):
     for r in rows:
         r["story"] = "  " + r["story"].replace("\n", "\r\n") + "\t"
     _write_jsonl(path, rows)
-    assert verify_exam_stories(exam_dir, frozen, [2]) == {2: 2}
+    assert verify_exam_stories(exam_dir, frozen, [2]) == {2: 4}
 
 
 @pytest.mark.parametrize(
@@ -603,10 +601,10 @@ def test_chance_is_derived_from_the_option_count_not_hardcoded():
         answer_index=0,
         option_sources=[
             {"story_id": "s_true", "story_sha256": "a" * 64, "phase": 2},
-            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 3},
-            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 4},
-            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 5},
-            {"story_id": "s_d4", "story_sha256": "e" * 64, "phase": 6},
+            {"story_id": "s_d1", "story_sha256": "b" * 64, "phase": 2},
+            {"story_id": "s_d2", "story_sha256": "c" * 64, "phase": 2},
+            {"story_id": "s_d3", "story_sha256": "d" * 64, "phase": 2},
+            {"story_id": "s_d4", "story_sha256": "e" * 64, "phase": 2},
         ],
     )
     _, _, _, chance = score_continuation_phase(model, [five], TOK, CFG, DEV)
@@ -627,7 +625,7 @@ def test_a_phase_with_mixed_option_counts_is_refused():
         id="k5",
         options=["xxxx", "y", "yy", "zz", "zzz"],
         option_sources=a_continuation_item()["option_sources"]
-        + [{"story_id": "s_d4", "story_sha256": "e" * 64, "phase": 6}],
+        + [{"story_id": "s_d4", "story_sha256": "e" * 64, "phase": 2}],
     )
     with pytest.raises(ValueError, match="one chance level per phase"):
         score_continuation_phase(model, [four, five], TOK, CFG, DEV)

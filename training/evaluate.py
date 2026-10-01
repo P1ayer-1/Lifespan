@@ -565,8 +565,8 @@ def validate_continuation_item(row: dict, known_story_hashes: Any = None) -> int
       - `option_sources` has one entry per option, each carrying story_id,
         story_sha256 and phase;
       - the answer option's source phase equals the item's own phase;
-      - each of the other options' sources has neither the item's phase nor the
-        answer's story id;
+      - each of the other options' sources has the item's phase (Amendment 5,
+        2026-10-01; before it, another phase) and not the answer's story id;
       - when `known_story_hashes` is given (a set of exam story hashes, or a
         mapping hash -> phase), every source's `story_sha256` is a member, and
         with a mapping its claimed `phase` is the phase the exam records. The
@@ -639,10 +639,12 @@ def validate_continuation_item(row: dict, known_story_hashes: Any = None) -> int
     for i, source in enumerate(sources):
         if i == answer_index:
             continue
-        if source["phase"] == item_phase:
+        if source["phase"] != item_phase:
             raise ValueError(
-                where + ": distractor option " + str(i) + " was drawn from the item's own "
-                "phase " + repr(item_phase) + "; a distractor must come from another phase"
+                where + ": distractor option " + str(i) + " was drawn from phase "
+                + repr(source["phase"]) + "; a distractor must come from the item's own phase "
+                + repr(item_phase) + " (AGENTS.md Amendment 5), or the item asks which "
+                "phase's register the model knows"
             )
         if source["story_id"] == answer_story:
             raise ValueError(
