@@ -957,3 +957,21 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   phase (probe rebuild and a new freeze; stories unchanged), keeping PMI;
   (2) what the pilot needs for forgetting to be measurable at all: more
   steps per phase, the 5,000-story sizes, or phases that differ more.
+
+## 2026-10-01 — Amendment 5 (owner): same-phase continuation distractors; pre-pilot exam re-frozen as lifespan-prepilot-v2
+
+- **Decided (owner):** continuation distractors come from three other exam
+  stories of the item's own phase (AGENTS.md Amendment 5, af21ee0), PMI
+  scoring kept. Builder, verify_probes and the evaluator's item check all
+  enforce it; 487 tests pass.
+- **Re-frozen** (exam-keeper script outside the repo,
+  exams_prepilot/scratch/keeper/reprobe_v2.py): the 300 exam stories and the
+  cloze files are byte-identical to the 2026-09-30 freeze; only the three
+  continuation files changed. New dir exam_dir_v2, experiment_id
+  lifespan-prepilot-v2, manifest sha256 27bc091c...edf0, which records
+  `supersedes` (lifespan-prepilot, 415aa98a...) and the probe-builder
+  commit. Items 96 / 100 / 100; answer slots balanced; answer / mean
+  distractor length median 1.04 / 0.95 / 0.93 (was 0.94 / 1.12 / 1.13);
+  answer is the longest option 0.27 / 0.16 / 0.19 (chance 0.25). guard.check
+  passes on prepilot_train with the new id and refuses the old id and none.
+- Matrices scored on the old probes are never pooled with these.
