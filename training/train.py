@@ -645,6 +645,14 @@ def run(
 
     # -- 4. resume ----------------------------------------------------------
     spath = state_path(out_dir)
+    if not args.resume and spath.exists():
+        # A fresh run never writes over another run's folder: the first Kaggle
+        # pre-pilot's arm A ran with a stale --out and replaced phase0's result
+        # files in place (2026-10-01).
+        raise SystemExit(
+            f"{out_dir} already holds a run ({spath.name}). Pass --resume to continue "
+            "that run, or point --out at this run's own folder."
+        )
     if args.resume and spath.exists():
         state = load_state(spath)
         require_compatible(fingerprint, state.fingerprint, f"run state {spath}")

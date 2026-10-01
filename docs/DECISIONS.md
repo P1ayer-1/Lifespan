@@ -850,3 +850,32 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   the dataset is attached, not only on RESUME (a fresh arm A needs it), and
   each push carries the other arms' `out/` folders forward from the attached
   version, since a dataset version replaces the whole dataset.
+
+## 2026-10-01 — pre-pilot arm A: continuation measures register, not retention
+
+- **Measured** (arm A, seed 0, commit 2c183f8, T4 fp16, pilot sizes, phases
+  0/3/6; matrix pulled from the lifespan-checkpoints dataset). Phase-0 exam
+  row by row (untrained / after 0 / after 3 / after 6):
+  per-token loss 9.10 / 5.71 / 5.37 / 5.37; cloze 0.05 / 0.26 / 0.30 / 0.35
+  (chance 0.05); continuation 0.24 / 0.885 / 0.29 / 0.10 (chance 0.25).
+  After phase 0 alone (29 steps, loss 5.67) continuation is 0.885 on phase 0
+  and 0.010 / 0.000 on phases 3 / 6; after phase 6 it is 0.10 / 0.26 / 0.45.
+  Train time 17 + 41 + 77 s; each exam pass ~108 s; 0.156 GPU-hours.
+- **Reading:** loss and cloze say arm A does not forget phase 0 at all; it
+  keeps improving. Continuation says it loses 88% of its peak. Scores far
+  below chance (0.010, 0.000) are impossible for a retention measure and
+  expected for a preference one: the distractors are other phases' stories
+  (PLAN.md, Evaluation), so the item asks which phase's register the model
+  currently prefers, and the prefix barely matters to a model this weak.
+  H1 on the headline metric would "hold" for a reason that is not forgetting.
+- **Open, owner's decision** (H1-H4 and the continuation scoring are frozen):
+  (1) score continuation by PMI, log p(option | prefix) - log p(option),
+  which cancels the register prior and needs no exam rebuild; (2) same-phase
+  distractors, which needs new probes and a new freeze; (3) keep it and
+  report it as register preference, with H1 read on loss and cloze.
+- **Run hygiene:** arm A ran with a stale --out (the notebook's run-folder
+  cell was not re-run after ARM changed) and replaced phase0's result files;
+  A's matrix carries the phase-0 row, so no number is lost. train.py now
+  refuses a fresh run over a folder holding state.pt, and the launch cell
+  asserts the run folder matches ARM/SEED. Arm E's result is not in the
+  dataset.

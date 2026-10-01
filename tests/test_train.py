@@ -281,6 +281,16 @@ def test_resume_refuses_a_state_from_a_different_run(toy_dirs):
         run(toy_args(toy_dirs, "E", 0, out=out, resume=True), **HOOKS)
 
 
+def test_a_fresh_run_refuses_another_runs_folder(toy_dirs):
+    """The first Kaggle pre-pilot's arm A ran with phase0's --out and replaced
+    phase0's result files in place (2026-10-01)."""
+    out = run(toy_args(toy_dirs, "phase0", 0), **HOOKS)
+    before = (out / "config.json").read_bytes()
+    with pytest.raises(SystemExit, match="already holds a run"):
+        run(toy_args(toy_dirs, "A", 0, out=out), **HOOKS)
+    assert (out / "config.json").read_bytes() == before
+
+
 # ---------------------------------------------------------------------------
 # the hook contract
 
