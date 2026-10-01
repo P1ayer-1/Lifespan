@@ -996,3 +996,40 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   recorded, not corrected.
 - **Smoke:** 20 phase-3 stories, all 20 use an assigned side-character
   name; mean 398 words.
+
+## 2026-10-01 — grid036 training audit: phases 3 and 6 miss the fact bar; full fact check (owner)
+
+- **Measured** (the pre-registered 10% audit, 500 stories per phase drawn with
+  seed 42, both gates on Opus; every verdict file checked to cover exactly
+  its part): fact-check pass / age-fit pass / both, with 95% intervals on the
+  fact rate —
+  phase 0: 96.4% [94.8, 98.0] / 95.2% / 462 of 500;
+  phase 3: 88.6% [85.8, 91.4] / 93.6% / 422;
+  phase 6: 88.2% [85.4, 91.0] / 96.6% / 425.
+  Phase 3/6 fact failures are mostly worked arithmetic and wrong details of
+  real works, rules and places, not register.
+- **Rule outcome:** phase 0 passes; phases 3 and 6 fall below the fixed 90%
+  fact bar, so they get the full review.
+- **Decided (owner):** the full review is the gate that failed: a fact check
+  of every unaudited phase 3/6 training story; every failure is dropped, none
+  regenerated (corpora end near 4,450). Age fit passed in all three phases
+  and is not re-run. Phase 0 keeps all stories except its audited failures.
+  The session's web-search budget is spent, so checkers verify by fetching
+  pages directly.
+- **Also dropped everywhere:** the mechanical defects (CJK characters, a
+  "Continue reading" stub, duplicated paragraphs): 1 / 2 / 4 training stories
+  with duplicated paragraphs and 0 / 6 / 13 with CJK characters in phases
+  0 / 3 / 6.
+
+## 2026-10-01 — grid036 full fact check done; train dir built
+
+- **Measured:** all 226 full-fact parts verified complete (the build refuses
+  on any story without a verdict). Kept / source after dropping fact
+  failures, audited age < 3 and mechanical defects: phase 0 4,961 / 5,000;
+  phase 3 4,373 / 4,997; phase 6 4,364 / 5,000. Phase 3/6 full-check fact
+  failures ~12%, matching the audit estimate.
+- **Built:** `D:\Lifespan\grid036_train` (train_phase_{0,3,6}.jsonl, replay
+  500 per phase, seed 4243). Report: `exams_grid036/scratch/build_train_report.json`.
+- **Guard:** `training.guard` passes against the frozen exam (manifest sha
+  25cee546…, experiment_id lifespan-grid036): 13,701 lines vs 1,500 exam
+  stories, data_hash 37861c52b23f.
