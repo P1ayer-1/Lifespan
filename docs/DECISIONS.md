@@ -975,3 +975,24 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   answer is the longest option 0.27 / 0.16 / 0.19 (chance 0.25). guard.check
   passes on prepilot_train with the new id and refuses the old id and none.
 - Matrices scored on the old probes are never pooled with these.
+
+## 2026-10-01 — grid036: phases 0/3/6 at full size on a rented 8x3090 node (owner)
+
+- **Decided (owner):** the next run is the grid (arms phase0, A, B, C, D,
+  D-nr, E; seeds 0-2) on phases 0/3/6 at PLAN.md's full sizes, 5,000 training
+  stories and 500 exam items per phase, on a rented 8x RTX 3090 node
+  (~$1/h). Corpus rebuilt on one template: side-character names merged
+  (curriculum-learning 37eac30) and the revised phase-3 fact bank installed
+  (282901c). Train prompts seed 42 (5,000/phase), exam prompts seed 4242
+  (600/phase: 500 + reserve), tiers as the pre-pilot (0; 7-9; 13). No hash
+  or name/location/noun/verb overlap between train and exam prompts.
+- **Review (owner): a 10% audit of the training stories**, both gates on
+  Opus; the exam stories get the full review. **Fixed before any result:**
+  the audit draws 500 stories per phase uniformly at random (seed 42). A
+  phase passes when the sample's fact-check pass rate AND age-fit pass rate
+  are each >= 90% (the pre-pilot's first passes were 93-96%); a phase below
+  either gets the full review of all 5,000. Sampled stories that fail are
+  dropped from the corpus; the unsampled stories' estimated defect rate is
+  recorded, not corrected.
+- **Smoke:** 20 phase-3 stories, all 20 use an assigned side-character
+  name; mean 398 words.
