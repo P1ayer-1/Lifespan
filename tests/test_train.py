@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from pathlib import Path
 
 NL = chr(10)
@@ -1173,3 +1174,30 @@ def test_micro_batch_flag_parses_and_rejects_zero():
     assert build_parser().parse_args([*base, "--micro-batch", "8"]).micro_batch == 8
     with pytest.raises(SystemExit):
         build_parser().parse_args([*base, "--micro-batch", "0"])
+
+
+# ---------------------------------------------------------------------------
+# precision: a T4 reports bf16 "supported" (emulated); it must get fp16
+
+
+@pytest.mark.parametrize(
+    "capability, expected",
+    [((7, 5), "fp16+gradscaler"), ((6, 0), "fp16+gradscaler"), ((8, 0), "bf16"), ((9, 0), "bf16")],
+)
+def test_precision_needs_ampere_for_bf16(monkeypatch, capability, expected):
+    from training.train import resolve_precision
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # GradScaler("cuda") on a CUDA-less test box
+        _device, _dtype, _scaler, name = resolve_precision()
+    assert name == expected
+
+
+def test_precision_cpu_flag_wins(monkeypatch):
+    from training.train import resolve_precision
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert resolve_precision(force_cpu=True)[3] == "fp32"

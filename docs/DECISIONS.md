@@ -833,3 +833,20 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   student logits, so they need the same change before the grid. Multi-GPU
   (DDP) is not used; a cheaper use of a second GPU is running two
   independent arms at once (e.g. E beside phase0).
+
+## 2026-10-01 — first Kaggle phase0 run: T4 precision bug; run discarded
+
+- **Measured:** arm phase0, seed 0, pre-pilot (commit 0f43922, MICRO_BATCH 8)
+  finished on a T4: phase 0 loss 9.09 -> 5.67 in 29 steps (928 sequences),
+  ~3.4 s/step, each full exam scoring ~1m45s, shared phase-0 checkpoint
+  written. But the log said "bf16 on cuda": `torch.cuda.is_bf16_supported()`
+  counts emulation and is True on a T4 (compute 7.5), against PLAN.md's
+  "fp16 with loss scaling on T4".
+- **Decided:** native bf16 now also needs compute capability 8.0+; a T4 gets
+  fp16 + GradScaler (tests/test_train.py fakes 6.0/7.5/8.0/9.0). The run is
+  discarded and phase0 re-run at the fixed commit; the commit is in the
+  shared-checkpoint fingerprint, so A and E could not inherit it anyway.
+- **Notebook:** the checkpoint dataset's `_phase0/` is now restored whenever
+  the dataset is attached, not only on RESUME (a fresh arm A needs it), and
+  each push carries the other arms' `out/` folders forward from the attached
+  version, since a dataset version replaces the whole dataset.

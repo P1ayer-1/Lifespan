@@ -261,10 +261,14 @@ def resolve_precision(force_cpu: bool = False) -> tuple[torch.device, torch.dtyp
 
     Detected, never assumed (`PLAN.md`: "bf16 on A100, fp16 with loss scaling on
     T4 -- Kaggle's GPUs are T4s and lack bf16"); the answer goes in config.json.
+    `is_bf16_supported()` alone says True on a T4 (it counts emulation), so
+    native bf16 also needs compute capability 8.0+ (Ampere): the first Kaggle
+    pre-pilot run reported "bf16" on a T4 (2026-10-01).
     """
-    if not force_cpu and torch.cuda.is_available():  # pragma: no cover - no CUDA on the dev box
+    if not force_cpu and torch.cuda.is_available():
         device = torch.device("cuda")
-        if torch.cuda.is_bf16_supported():
+        major, _minor = torch.cuda.get_device_capability(device)
+        if major >= 8 and torch.cuda.is_bf16_supported():
             return device, torch.bfloat16, torch.amp.GradScaler("cuda", enabled=False), "bf16"
         return device, torch.float16, torch.amp.GradScaler("cuda", enabled=True), "fp16+gradscaler"
     return torch.device("cpu"), None, torch.amp.GradScaler("cpu", enabled=False), "fp32"
