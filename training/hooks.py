@@ -43,6 +43,11 @@ class PhaseContext:
     warmup: int
     log: Callable[[str], None]
     timer: Callable[[str], AbstractContextManager[None]]
+    #: --micro-batch (2026-10-01): rows per forward/backward inside a hook's
+    #: own loops; gradients accumulate to the full batch. Memory only. None
+    #: runs each batch whole. Added last, with a default, so every existing
+    #: construction is unchanged.
+    micro_batch: int | None = None
 
 
 class AfterPhase(Protocol):

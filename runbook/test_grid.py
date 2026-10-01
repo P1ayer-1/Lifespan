@@ -188,3 +188,82 @@ def test_the_experiment_id_is_passed_through_only_when_given(tmp_path):
     assert grid.build_parser().parse_args(
         ["--train-dir", "t", "--exam-dir", "e", "--experiment-id", "x"]
     ).experiment_id == "x"
+
+
+# ---------------------------------------------------------------------------
+# --gpus: the parallel scheduler (2026-10-01)
+
+
+def _fake_parallel_runs(monkeypatch, fail=()):
+    """Every training.train call 'runs' instantly: records its arm, seed, GPU
+    and flags, makes the out dir, and exits 0 (or 1 for (arm, seed) in fail)."""
+    import threading
+
+    calls, lock = [], threading.Lock()
+
+    def fake_run(argv, cwd=None, env=None, stdout=None, stderr=None, **kw):
+        arm, seed = argv[argv.index("--arm") + 1], int(argv[argv.index("--seed") + 1])
+        with lock:
+            calls.append({"arm": arm, "seed": seed, "argv": list(argv),
+                          "gpu": (env or {}).get("CUDA_VISIBLE_DEVICES"), "prepare": "--prepare-only" in argv})
+        if "--prepare-only" not in argv:
+            Path(argv[argv.index("--out") + 1]).mkdir(parents=True, exist_ok=True)
+        return type("P", (), {"returncode": 1 if (arm, seed) in fail else 0})()
+
+    monkeypatch.setattr(grid.subprocess, "run", fake_run)
+    monkeypatch.setattr(grid.VALIDATE, "validate", lambda path: [] if Path(path).exists() else ["missing"])
+    monkeypatch.setattr(grid, "find_existing_valid_run", lambda *a, **k: None)
+    monkeypatch.setattr(grid.ledger, "gpu_hours_from_timings", lambda out_dir: (0.0, "fake"))
+    return calls
+
+
+def _parallel(tmp_path, **kw):
+    return grid.run_grid_parallel(
+        train_dir=tmp_path / "train", exam_dir=tmp_path / "exam", results_root=tmp_path / "results",
+        state_path=tmp_path / "state.json", ledger_path=tmp_path / "ledger.json", gpus=["0", "1", "2", "3"],
+        phases="0,3,6", micro_batch=8, experiment_id="x", log=lambda *_: None, **kw,
+    )
+
+
+def test_parallel_runs_all_21_after_one_prepare(monkeypatch, tmp_path, clean_tree):
+    calls = _fake_parallel_runs(monkeypatch)
+    reports = _parallel(tmp_path)
+    assert calls[0]["prepare"] and sum(c["prepare"] for c in calls) == 1
+    runs = [c for c in calls if not c["prepare"]]
+    assert len(runs) == 21 and {(c["arm"], c["seed"]) for c in runs} == set(grid.grid_invocations((0, 1, 2)))
+    assert all(r["status"] == "complete" for r in reports) and len(reports) == 21
+    assert {c["gpu"] for c in runs} <= {"0", "1", "2", "3"}
+    for c in runs:  # the flags reach every training.train call
+        a = c["argv"]
+        assert a[a.index("--phases") + 1] == "0,3,6" and a[a.index("--micro-batch") + 1] == "8"
+
+
+def test_parallel_starts_an_arm_only_after_its_seeds_phase0(monkeypatch, tmp_path, clean_tree):
+    calls = _fake_parallel_runs(monkeypatch)
+    _parallel(tmp_path)
+    order = [(c["arm"], c["seed"]) for c in calls if not c["prepare"]]
+    for seed in (0, 1, 2):
+        for arm in ("A", "B", "C", "D", "D-nr"):
+            assert order.index(("phase0", seed)) < order.index((arm, seed))
+
+
+def test_parallel_skips_a_seed_whose_phase0_failed(monkeypatch, tmp_path, clean_tree):
+    calls = _fake_parallel_runs(monkeypatch, fail={("phase0", 1)})
+    reports = {(r["arm"], r["seed"]): r["status"] for r in _parallel(tmp_path)}
+    assert reports[("phase0", 1)] == "failed"
+    for arm in ("A", "B", "C", "D", "D-nr"):
+        assert reports[(arm, 1)] == "blocked_on_phase0"
+        assert reports[(arm, 0)] == reports[(arm, 2)] == "complete"
+    assert reports[("E", 1)] == "complete"  # E never loads phase0
+    ran = {(c["arm"], c["seed"]) for c in calls if not c["prepare"]}
+    assert not any((arm, 1) in ran for arm in ("A", "B", "C", "D", "D-nr"))
+
+
+def test_parallel_refuses_when_prepare_fails(monkeypatch, tmp_path, clean_tree):
+    _fake_parallel_runs(monkeypatch, fail={("phase0", 0)})
+    monkeypatch.setattr(
+        grid.subprocess, "run",
+        lambda argv, **k: type("P", (), {"returncode": 1 if "--prepare-only" in argv else 0})(),
+    )
+    with pytest.raises(RuntimeError, match="prepare-only failed"):
+        _parallel(tmp_path)

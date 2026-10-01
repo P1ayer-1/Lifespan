@@ -294,6 +294,8 @@ class Settings:
         self.stories_per_phase: int | None = None
         self.max_steps: int | None = None
         self.n_new: int = self.train_cfg.sequences_per_batch
+        #: --micro-batch: memory only; the base loop and the hooks both use it.
+        self.micro_batch: int | None = getattr(args, "micro_batch", None)
         #: The phases this run trains, by real id. All seven unless `--phases`
         #: declares a subset (e.g. 0,3,6 for the pre-pilot corpus). `getattr`
         #: because a Namespace built before the flag existed has no attribute.
@@ -471,6 +473,12 @@ def run(
         # DataModule trains on; a full run passes None and is unchanged.
         phases=settings.phases if settings.subset else None,
     )
+    if getattr(args, "prepare_only", False):
+        # The guard has passed and the shared tokenizer exists; nothing else is
+        # written. runbook.grid calls this once before dispatching runs in
+        # parallel, so no two runs race to train and write tokenizer.json.
+        print(f"prepared: guard passed, tokenizer at {shared_dir / 'tokenizer.json'}")
+        return shared_dir
     data = DataModule(
         args.train_dir,
         tokenizer,
@@ -527,7 +535,7 @@ def run(
         "precision": precision,
         "device": str(device),
         #: --micro-batch: gradient accumulation chunk, memory only (None = whole batch).
-        "micro_batch": getattr(args, "micro_batch", None),
+        "micro_batch": settings.micro_batch,
         "model": asdict(settings.model_cfg),
         "n_parameters": sum(settings.model_cfg.n_params()),
         "n_parameters_nonembedding": settings.model_cfg.n_params()[0],
@@ -748,7 +756,7 @@ def run(
                     device=device,
                     amp_dtype=amp_dtype,
                     log=record.log,
-                    micro_batch=getattr(args, "micro_batch", None),
+                    micro_batch=settings.micro_batch,
                 )
             record.log(
                 f"  {label} done: loss {stats['first_loss']:.4f} -> {stats['last_loss']:.4f}, "
@@ -842,6 +850,7 @@ def _make_ctx(settings, data, phase, steps, device, amp_dtype, record, timings) 
         warmup=settings.warmup(steps),
         log=record.log,
         timer=timings.timer,
+        micro_batch=settings.micro_batch,
     )
 
 
@@ -945,6 +954,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="training.config.TOY: a CPU smoke test, never a result (AGENTS.md).",
     )
     p.add_argument("--cpu", action="store_true", help="force CPU even where CUDA exists")
+    p.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help=(
+            "run the guard and build the shared tokenizer, then exit without training or "
+            "writing --out (runbook.grid runs this once before parallel dispatch)"
+        ),
+    )
     p.add_argument(
         "--micro-batch",
         type=_positive_int,

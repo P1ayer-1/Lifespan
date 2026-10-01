@@ -399,3 +399,53 @@ def test_after_phase_smoke(arm: str, frac: float, toy_cfg):
     with torch.no_grad():
         logits = lora.forward_logits(out, token_batch(2, seed=3))
     assert torch.isfinite(logits).all()
+
+
+# ---------------------------------------------------------------------------
+# --micro-batch (2026-10-01): memory only, in the hook's own loops too
+# ---------------------------------------------------------------------------
+
+
+def _weights(model):
+    return {n: p.detach().clone() for n, p in model.state_dict().items()}
+
+
+@pytest.fixture
+def sgd(monkeypatch):
+    """Plain SGD for the equivalence tests: AdamW normalises each update, so
+    float summation-order noise on a near-zero gradient can flip its sign and
+    hide or fake a difference. With SGD a weight change is lr x gradient."""
+    monkeypatch.setattr(
+        consolidate, "_make_optimizer", lambda model, params, cfg, lr, device_type: torch.optim.SGD(params, lr=lr)
+    )
+
+
+@pytest.mark.parametrize("micro", [1, 3])
+def test_step1_micro_batching_matches_the_whole_batch(toy_cfg, micro, sgd):
+    import dataclasses
+
+    outs = []
+    for m in (None, micro):
+        rec = RecordingContext(arm="C", phase=1, replay_fraction=0.0, steps=3, lr=1e-2)
+        ctx = dataclasses.replace(rec.ctx, micro_batch=m)
+        outs.append(_weights(consolidate.train_phase_lora(make_model(seed=0), 1, ctx, toy_cfg)))
+    for name, value in outs[0].items():
+        torch.testing.assert_close(outs[1][name], value, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("micro", [1, 3])
+def test_distillation_micro_batching_matches_the_whole_batch(toy_cfg, micro, sgd):
+    """Both KL terms, with replay: each stays its own token mean."""
+    import dataclasses
+
+    outs = []
+    for m in (None, micro):
+        student = make_model(seed=0)
+        teacher = _perturbed_teacher(student, scale=0.05)
+        prev = copy.deepcopy(student)
+        rec = RecordingContext(arm="D", phase=2, replay_fraction=0.3, steps=3, lr=1e-2)
+        ctx = dataclasses.replace(rec.ctx, micro_batch=m)
+        assert rec.ctx.sequences_per_batch > 3  # the chunks really split the batch
+        outs.append(_weights(consolidate.distill_into_base(student, teacher, prev, 2, ctx, toy_cfg)))
+    for name, value in outs[0].items():
+        torch.testing.assert_close(outs[1][name], value, rtol=1e-5, atol=1e-6)

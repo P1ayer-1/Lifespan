@@ -1211,3 +1211,15 @@ def test_precision_cpu_flag_wins(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     assert resolve_precision(force_cpu=True)[3] == "fp32"
+
+
+def test_prepare_only_runs_the_guard_and_writes_no_run(toy_dirs):
+    """runbook.grid's parallel mode calls this once before dispatch."""
+    args = toy_args(toy_dirs, "phase0", 0)
+    args.prepare_only = True
+    run(args, **HOOKS)
+    assert not Path(args.out).exists()
+    parsed = build_parser().parse_args(
+        ["--arm", "phase0", "--seed", "0", "--train-dir", "t", "--exam-dir", "e", "--out", "o", "--prepare-only"]
+    )
+    assert parsed.prepare_only

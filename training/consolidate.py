@@ -167,6 +167,19 @@ def check_batch(idx: torch.Tensor, n_sequences: int, what: str) -> torch.Tensor:
     return idx
 
 
+def _chunks(n_rows: int, micro_batch: int | None):
+    """Row slices of one batch for gradient accumulation (`--micro-batch`).
+
+    Each chunk's mean loss is weighted by its share of the rows: rows are
+    contiguous unpadded blocks (`check_batch`), so every row has the same
+    token count and the weighted sum is the whole batch's token mean.
+    """
+    size = micro_batch or n_rows
+    for lo in range(0, n_rows, size):
+        hi = min(n_rows, lo + size)
+        yield slice(lo, hi), (hi - lo) / n_rows
+
+
 def _autocast(ctx: PhaseContext):
     if ctx.amp_dtype is None:
         return torch.autocast(device_type=ctx.device.type, enabled=False)
@@ -215,11 +228,12 @@ def train_phase_lora(
             group["lr"] = lr
         idx = check_batch(next(batches), n_new, f"phase-{phase_k}").to(ctx.device)
         x, y = shift_for_lm(idx)
-        with _autocast(ctx):
-            logits = forward_logits(model, x)
-        loss = lm_loss(logits, y)
         opt.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
+        for rows, share in _chunks(x.shape[0], getattr(ctx, "micro_batch", None)):
+            with _autocast(ctx):
+                logits = forward_logits(model, x[rows])
+            loss = lm_loss(logits, y[rows]) * share
+            scaler.scale(loss).backward()
         scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(params, cfg.grad_clip)
         scaler.step(opt)
@@ -300,23 +314,28 @@ def distill_into_base(
         # and no arm is scored on a position another arm never saw.
         idx = check_batch(next(phase_batches), n_new, f"phase-{phase_k}").to(ctx.device)
         x, _ = shift_for_lm(idx)
-        with torch.no_grad(), _autocast(ctx):
-            t_logits = forward_logits(teacher_T, x)
-        with _autocast(ctx):
-            s_logits = forward_logits(student, x)
-        loss = kl_teacher_student(t_logits, s_logits)
+        micro = getattr(ctx, "micro_batch", None)
+        opt.zero_grad(set_to_none=True)
+        # Each term is still its own token mean (chunk shares sum to 1 within
+        # a term), so lambda keeps its meaning under --micro-batch.
+        for rows, share in _chunks(x.shape[0], micro):
+            with torch.no_grad(), _autocast(ctx):
+                t_logits = forward_logits(teacher_T, x[rows])
+            with _autocast(ctx):
+                s_logits = forward_logits(student, x[rows])
+            scaler.scale(kl_teacher_student(t_logits, s_logits) * share).backward()
 
         if replay_batches is not None:
             r_idx = check_batch(next(replay_batches), n_replay, "replay").to(ctx.device)
             rx, _ = shift_for_lm(r_idx)
-            with torch.no_grad(), _autocast(ctx):
-                b_logits = forward_logits(prev_base, rx)
-            with _autocast(ctx):
-                sr_logits = forward_logits(student, rx)
-            loss = loss + cfg.distill_lambda * kl_teacher_student(b_logits, sr_logits)
+            for rows, share in _chunks(rx.shape[0], micro):
+                with torch.no_grad(), _autocast(ctx):
+                    b_logits = forward_logits(prev_base, rx[rows])
+                with _autocast(ctx):
+                    sr_logits = forward_logits(student, rx[rows])
+                term = cfg.distill_lambda * kl_teacher_student(b_logits, sr_logits) * share
+                scaler.scale(term).backward()
 
-        opt.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
         scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(params, cfg.grad_clip)
         scaler.step(opt)

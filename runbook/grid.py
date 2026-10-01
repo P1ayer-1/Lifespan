@@ -37,8 +37,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -171,6 +173,9 @@ def build_train_argv(
     toy: bool,
     cpu: bool,
     experiment_id: str | None = None,
+    phases: str | None = None,
+    micro_batch: int | None = None,
+    prepare_only: bool = False,
 ) -> list[str]:
     argv = [
         sys.executable,
@@ -194,6 +199,12 @@ def build_train_argv(
     if experiment_id is not None:
         # Omitted, train.py uses training.config.EXPERIMENT_ID -- the grid's.
         argv += ["--experiment-id", experiment_id]
+    if phases is not None:
+        argv += ["--phases", str(phases)]
+    if micro_batch is not None:
+        argv += ["--micro-batch", str(micro_batch)]
+    if prepare_only:
+        argv.append("--prepare-only")
     if resume:
         argv.append("--resume")
     if toy:
@@ -218,6 +229,8 @@ def run_grid(
     dry_run: bool = False,
     log=print,
     experiment_id: str | None = None,
+    phases: str | None = None,
+    micro_batch: int | None = None,
 ) -> list[dict[str, Any]]:
     """Runs (or dry-runs) the 21 invocations in order. Returns one report dict
     per invocation: {arm, seed, action: skip|run, status, run_dir}.
@@ -267,6 +280,8 @@ def run_grid(
             toy=toy,
             cpu=cpu,
             experiment_id=experiment_id,
+            phases=phases,
+            micro_batch=micro_batch,
         )
 
         if dry_run:
@@ -306,6 +321,152 @@ def run_grid(
     return reports
 
 
+# ---------------------------------------------------------------------------
+# parallel: one run per GPU (an 8x RTX 3090 node, docs/DECISIONS.md 2026-10-01)
+
+
+def run_grid_parallel(
+    *,
+    train_dir: Path,
+    exam_dir: Path,
+    gpus: list[str],
+    results_root: Path = DEFAULT_RESULTS_ROOT,
+    phase0_dir: Path | None = None,
+    manifest: Path | None = None,
+    state_path: Path = DEFAULT_STATE_PATH,
+    ledger_path: Path = ledger.DEFAULT_LEDGER_PATH,
+    seeds: tuple[int, ...] = SEEDS,
+    toy: bool = False,
+    cpu: bool = False,
+    dry_run: bool = False,
+    log=print,
+    experiment_id: str | None = None,
+    phases: str | None = None,
+    micro_batch: int | None = None,
+) -> list[dict[str, Any]]:
+    """The same 21 invocations, one per GPU at a time (CUDA_VISIBLE_DEVICES).
+
+    Every run is the same `python -m training.train` call the sequential
+    runbook makes; only the scheduling differs. An arm that loads seed s's
+    phase-0 checkpoint starts only after phase0 seed s completed (and is
+    skipped, as in sequential mode, if it did not); phase0 and E start at
+    once. The shared tokenizer is built first by one `--prepare-only` call,
+    so no two runs race to train and write tokenizer.json. Each run's output
+    goes to `<results_root>/_logs/<arm>_s<seed>.log`.
+    """
+    if not gpus:
+        raise ValueError("run_grid_parallel needs at least one GPU id")
+    if git_is_dirty():
+        raise RuntimeError("working tree is dirty; refusing to start the grid (CLAUDE.md: a dirty tree is not a result)")
+    commit7 = git_head_commit7()
+    phase0_dir = Path(phase0_dir) if phase0_dir else results_root / "_phase0"
+    logs_dir = results_root / "_logs"
+    common = dict(
+        train_dir=Path(train_dir), exam_dir=Path(exam_dir), phase0_dir=phase0_dir, manifest=manifest,
+        toy=toy, cpu=cpu, experiment_id=experiment_id, phases=phases, micro_batch=micro_batch,
+    )
+
+    prepare = build_train_argv(
+        arm="phase0", seed=seeds[0], out_dir=results_root / "_prepare", resume=False, prepare_only=True, **common
+    )
+    if dry_run:
+        log("DRY   " + " ".join(prepare))
+    else:
+        log("PREP  guard + shared tokenizer")
+        if subprocess.run(prepare, cwd=str(REPO_ROOT)).returncode != 0:
+            raise RuntimeError("--prepare-only failed; nothing was dispatched")
+
+    lock = threading.Condition()
+    state = load_state(state_path)
+    reports: list[dict[str, Any]] = []
+    phase0_status: dict[int, str] = {}  # seed -> "complete" | "failed"
+    pending: list[tuple[str, int]] = []
+    for arm, seed in grid_invocations(seeds):
+        existing = find_existing_valid_run(results_root, arm, seed, commit7)
+        if existing is not None:
+            log(f"SKIP  {arm} seed {seed}: already valid at {existing}")
+            reports.append({"arm": arm, "seed": seed, "action": "skip", "status": "already_complete", "run_dir": str(existing)})
+            if arm == "phase0":
+                phase0_status[seed] = "complete"
+            continue
+        pending.append((arm, seed))
+
+    def needs_phase0(arm: str) -> bool:
+        return ARMS[arm].shares_phase0 and arm != "phase0"
+
+    def take() -> tuple[str, int] | None:
+        """The next runnable job in grid order, or None when nothing is left.
+        Waits while the only jobs left are blocked on a running phase0."""
+        with lock:
+            while True:
+                for job in list(pending):
+                    arm, seed = job
+                    if needs_phase0(arm) and phase0_status.get(seed) == "failed":
+                        pending.remove(job)
+                        log(f"SKIP  {arm} seed {seed}: phase0 for this seed did not complete; nothing to load")
+                        reports.append({"arm": arm, "seed": seed, "action": "skip", "status": "blocked_on_phase0", "run_dir": None})
+                        continue
+                    if needs_phase0(arm) and phase0_status.get(seed) != "complete" and not dry_run:
+                        continue
+                    pending.remove(job)
+                    return job
+                if not pending:
+                    return None
+                lock.wait()
+
+    def worker(gpu: str) -> None:
+        while True:
+            job = take()
+            if job is None:
+                return
+            arm, seed = job
+            key = _key(arm, seed)
+            with lock:
+                resume = key in state
+                out_dir = Path(state[key]) if resume else results_root / f"{arm}_s{seed}_{commit7}_{_utc_stamp()}"
+                state[key] = str(out_dir)
+                if not dry_run:
+                    save_state(state, state_path)
+            argv = build_train_argv(arm=arm, seed=seed, out_dir=out_dir, resume=resume, **common)
+            if dry_run:
+                with lock:
+                    log(f"DRY   gpu {gpu}: " + " ".join(argv))
+                    reports.append({"arm": arm, "seed": seed, "action": "dry_run", "status": "n/a", "run_dir": str(out_dir)})
+                continue
+            log(f"RUN   gpu {gpu}: {'(resuming) ' if resume else ''}{arm} seed {seed} -> {out_dir}")
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu)}
+            with open(logs_dir / f"{key}.log", "a", encoding="utf-8") as fh:
+                proc = subprocess.run(argv, cwd=str(REPO_ROOT), env=env, stdout=fh, stderr=subprocess.STDOUT)
+            gpu_hours, gpu_name = ledger.gpu_hours_from_timings(out_dir)
+            if proc.returncode != 0:
+                status = "failed"
+            else:
+                failures = VALIDATE.validate(out_dir) if out_dir.exists() else ["did not produce a result folder"]
+                status = "complete" if not failures else "invalid"
+                if failures:
+                    log(f"      {arm} seed {seed}: ran but did not validate: {failures}")
+            with lock:
+                ledger.record_attempt(
+                    arm=arm, seed=seed, run_dir=out_dir, status=status, gpu_hours=gpu_hours, gpu_name=gpu_name,
+                    commit7=commit7, note="" if status == "complete" else f"exit code {proc.returncode}",
+                    ledger_path=ledger_path,
+                )
+                reports.append({"arm": arm, "seed": seed, "action": "run", "status": status, "run_dir": str(out_dir)})
+                log(f"DONE  gpu {gpu}: {arm} seed {seed}: {status}")
+                if arm == "phase0":
+                    phase0_status[seed] = "complete" if status == "complete" else "failed"
+                lock.notify_all()
+
+    threads = [threading.Thread(target=worker, args=(g,), daemon=True) for g in gpus]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    order = {inv: i for i, inv in enumerate(grid_invocations(seeds))}
+    return sorted(reports, key=lambda r: order[(r["arm"], r["seed"])])
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m runbook.grid",
@@ -326,12 +487,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--toy", action="store_true", help="a local dry run on the toy config, CPU only")
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="print the commands without running any of them")
+    p.add_argument("--phases", default=None, help="passed to training.train (e.g. 0,3,6 for grid036)")
+    p.add_argument("--micro-batch", type=int, default=None, help="passed to training.train; memory only")
+    p.add_argument(
+        "--gpus",
+        default=None,
+        help="comma-separated GPU ids (e.g. 0,1,2,3,4,5,6,7): run one invocation per GPU in parallel",
+    )
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    reports = run_grid(
+    runner = run_grid
+    extra: dict[str, Any] = {}
+    if args.gpus:
+        runner = run_grid_parallel
+        extra["gpus"] = [g.strip() for g in args.gpus.split(",") if g.strip()]
+    reports = runner(
+        **extra,
+        phases=args.phases,
+        micro_batch=args.micro_batch,
         train_dir=args.train_dir,
         exam_dir=args.exam_dir,
         results_root=args.results_root,
