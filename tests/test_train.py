@@ -1217,8 +1217,12 @@ def test_prepare_only_runs_the_guard_and_writes_no_run(toy_dirs):
     """runbook.grid's parallel mode calls this once before dispatch."""
     args = toy_args(toy_dirs, "phase0", 0)
     args.prepare_only = True
-    run(args, **HOOKS)
+    shared = run(args, **HOOKS)
     assert not Path(args.out).exists()
+    assert (shared / "init_s0.pt").exists()  # the seed's shared init, written once
+    # a normal run then loads it rather than writing it
+    out = run(toy_args(toy_dirs, "E", 0), **HOOKS)
+    assert "loaded the shared random init" in (out / "log.txt").read_text(encoding="utf-8")
     parsed = build_parser().parse_args(
         ["--arm", "phase0", "--seed", "0", "--train-dir", "t", "--exam-dir", "e", "--out", "o", "--prepare-only"]
     )

@@ -208,7 +208,8 @@ def _fake_parallel_runs(monkeypatch, fail=()):
                           "gpu": (env or {}).get("CUDA_VISIBLE_DEVICES"), "prepare": "--prepare-only" in argv})
         if "--prepare-only" not in argv:
             Path(argv[argv.index("--out") + 1]).mkdir(parents=True, exist_ok=True)
-        return type("P", (), {"returncode": 1 if (arm, seed) in fail else 0})()
+        failed = (arm, seed) in fail and "--prepare-only" not in argv
+        return type("P", (), {"returncode": 1 if failed else 0})()
 
     monkeypatch.setattr(grid.subprocess, "run", fake_run)
     monkeypatch.setattr(grid.VALIDATE, "validate", lambda path: [] if Path(path).exists() else ["missing"])
@@ -225,10 +226,10 @@ def _parallel(tmp_path, **kw):
     )
 
 
-def test_parallel_runs_all_21_after_one_prepare(monkeypatch, tmp_path, clean_tree):
+def test_parallel_runs_all_21_after_one_prepare_per_seed(monkeypatch, tmp_path, clean_tree):
     calls = _fake_parallel_runs(monkeypatch)
     reports = _parallel(tmp_path)
-    assert calls[0]["prepare"] and sum(c["prepare"] for c in calls) == 1
+    assert [c["seed"] for c in calls[:3] if c["prepare"]] == [0, 1, 2] and sum(c["prepare"] for c in calls) == 3
     runs = [c for c in calls if not c["prepare"]]
     assert len(runs) == 21 and {(c["arm"], c["seed"]) for c in runs} == set(grid.grid_invocations((0, 1, 2)))
     assert all(r["status"] == "complete" for r in reports) and len(reports) == 21

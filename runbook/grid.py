@@ -350,8 +350,9 @@ def run_grid_parallel(
     runbook makes; only the scheduling differs. An arm that loads seed s's
     phase-0 checkpoint starts only after phase0 seed s completed (and is
     skipped, as in sequential mode, if it did not); phase0 and E start at
-    once. The shared tokenizer is built first by one `--prepare-only` call,
-    so no two runs race to train and write tokenizer.json. Each run's output
+    once. The shared tokenizer and each seed's shared random init are written
+    first by one `--prepare-only` call per seed, so no two runs race to write
+    tokenizer.json or init_s{seed}.pt. Each run's output
     goes to `<results_root>/_logs/<arm>_s<seed>.log`.
     """
     if not gpus:
@@ -366,15 +367,16 @@ def run_grid_parallel(
         toy=toy, cpu=cpu, experiment_id=experiment_id, phases=phases, micro_batch=micro_batch,
     )
 
-    prepare = build_train_argv(
-        arm="phase0", seed=seeds[0], out_dir=results_root / "_prepare", resume=False, prepare_only=True, **common
-    )
-    if dry_run:
-        log("DRY   " + " ".join(prepare))
-    else:
-        log("PREP  guard + shared tokenizer")
-        if subprocess.run(prepare, cwd=str(REPO_ROOT)).returncode != 0:
-            raise RuntimeError("--prepare-only failed; nothing was dispatched")
+    for seed in seeds:  # the tokenizer (first call) and every seed's shared init
+        prepare = build_train_argv(
+            arm="phase0", seed=seed, out_dir=results_root / "_prepare", resume=False, prepare_only=True, **common
+        )
+        if dry_run:
+            log("DRY   " + " ".join(prepare))
+        else:
+            log(f"PREP  seed {seed}: guard, shared tokenizer, shared init")
+            if subprocess.run(prepare, cwd=str(REPO_ROOT)).returncode != 0:
+                raise RuntimeError("--prepare-only failed; nothing was dispatched")
 
     lock = threading.Condition()
     state = load_state(state_path)

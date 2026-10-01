@@ -473,12 +473,6 @@ def run(
         # DataModule trains on; a full run passes None and is unchanged.
         phases=settings.phases if settings.subset else None,
     )
-    if getattr(args, "prepare_only", False):
-        # The guard has passed and the shared tokenizer exists; nothing else is
-        # written. runbook.grid calls this once before dispatching runs in
-        # parallel, so no two runs race to train and write tokenizer.json.
-        print(f"prepared: guard passed, tokenizer at {shared_dir / 'tokenizer.json'}")
-        return shared_dir
     data = DataModule(
         args.train_dir,
         tokenizer,
@@ -609,6 +603,20 @@ def run(
         "env": env,
         "git": git,
     }
+
+    if getattr(args, "prepare_only", False):
+        # The guard has passed; write the shared tokenizer (above) and this
+        # seed's shared random init, then stop before --out exists.
+        # runbook.grid --gpus calls this once per seed before dispatching, so
+        # no two runs race to write tokenizer.json or init_s{seed}.pt (phase0
+        # and E of one seed both start from the init; 2026-10-01).
+        ipath = init_path(shared_dir, settings.seed)
+        if ipath.exists():
+            load_shared(ipath, "init", expect=fingerprint)
+        else:
+            save_shared(ipath, kind="init", model=build_model(settings.model_cfg, g_init), fingerprint=fingerprint)
+        print(f"prepared: guard passed, {shared_dir / 'tokenizer.json'}, {ipath.name}")
+        return shared_dir
 
     record = RunRecord(out_dir, config, git, env)
     record.log(f"run {run_id}: arm {arm.name}, seed {settings.seed}, {precision} on {device}")
