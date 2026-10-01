@@ -215,41 +215,91 @@ def test_cloze_rejects_a_malformed_item():
 # --------------------------------------------------------------------------- #
 
 
-def test_continuation_headline_is_normalised_and_disagrees_with_the_sum():
-    """The true option is the longest; normalised and summed disagree.
+class RegisterLM(nn.Module):
+    """A bigram stub with a register: every position's logits are `make_pref()`
+    (x = 3, y = 1, else 0) except right after a "q", where z is raised to 4.
 
-    prefix "q", options scored on their own tokens (C = 5.6233090):
-      0 "xxxx" n=4 sum = 12 - 4C = -10.4932361   norm = 3 - C = -2.6233090
-      1 "y"    n=1 sum =  1 -  C =  -4.6233090   norm = 1 - C = -4.6233090
-      2 "yy"   n=2 sum =  2 - 2C =  -9.2466180   norm = 1 - C = -4.6233090
-      3 "zz"   n=2 sum =  0 - 2C = -11.2466180   norm = 0 - C = -5.6233090
-    normalised argmax = 0 (the true option)  -> headline accuracy 1.0
-    summed     argmax = 1 (a one-byte option) -> summed accuracy 0.0
+    So the model prefers x everywhere (its "register"), and the prefix "q" is
+    evidence for z. Position t depends only on token t, so the context-free
+    baseline (<|endoftext|> = byte 0, then the option) differs from the
+    conditional score only at the option's first token.
     """
-    model = ConstantLogitsLM(make_pref())
-    items = [{
-        "id": "k1", "phase": 0, "prefix": "q",
-        "options": ["xxxx", "y", "yy", "zz"],
-        "answer_index": 0, "distractor_phases": [1, 2, 3],
-        "option_sources": fake_sources(0, 1, 4, 0),
-    }]
-    acc_norm, acc_sum, n, chance = score_continuation_phase(model, items, TOK, CFG, DEV)
-    assert acc_norm == 1.0
+
+    def __init__(self, block_size: int = 1024):
+        super().__init__()
+        table = make_pref().repeat(256, 1)
+        table[Q, Z] = 4.0
+        self.register_buffer("table", table)
+        self.block_size = block_size
+
+    def forward(self, idx, targets=None):
+        return self.table[idx]
+
+
+# Cq = log( 253 + e^3 + e^1 + e^4 ), the normaliser after "q"
+#    = log( 253 + 20.085536923 + 2.718281828 + 54.598150033 )
+#    = log( 330.401968784 ) = 5.800310...
+CQ = math.log(253.0 + math.exp(3.0) + math.exp(1.0) + math.exp(4.0))
+PMI_ITEM = {
+    "id": "k1", "phase": 0, "prefix": "q",
+    "options": ["xx", "zz", "yy", "ww"],
+    "answer_index": 1, "distractor_phases": [1, 3, 4],
+}
+
+
+def test_continuation_headline_is_pmi_and_disagrees_with_the_sum():
+    """The prefix supports "zz"; the model's register prefers x.
+
+    prefix "q"; option = 2 bytes; first predicted after "q", second after
+    the first option byte (logits = pref there).
+      summed:  xx  (3 - Cq) + (3 - C) = 6 - Cq - C    <- argmax (register)
+               zz  (4 - Cq) + (0 - C) = 4 - Cq - C
+               yy  (1 - Cq) + (1 - C) = 2 - Cq - C
+               ww  (0 - Cq) + (0 - C) = 0 - Cq - C
+      baseline (after byte 0, logits = pref): first byte pref[o1] - C, second
+      as above, so PMI = (row_q[o1] - Cq) - (pref[o1] - C):
+               xx  3 - 3 + C - Cq = C - Cq
+               zz  4 - 0 + C - Cq = 4 + C - Cq            <- argmax (true)
+               yy  1 - 1 + C - Cq = C - Cq
+               ww  0 - 0 + C - Cq = C - Cq
+    PMI accuracy 1.0, summed accuracy 0.0.
+    """
+    assert 6 - CQ - C > 4 - CQ - C and 4 + C - CQ > C - CQ  # the paper above
+    item = dict(PMI_ITEM, option_sources=fake_sources(0, 1, 4, 1))
+    acc_pmi, acc_sum, n, chance = score_continuation_phase(RegisterLM(), [item], TOK, CFG, DEV)
+    assert acc_pmi == 1.0
     assert acc_sum == 0.0
-    assert acc_norm != acc_sum  # the two can disagree; the headline is the normalised one
     assert n == 1
     assert chance == 0.25
 
 
-def test_continuation_headline_in_evaluate_all_is_the_normalised_score(tmp_path):
-    """evaluate_all()["continuation"] is the normalised accuracy; the summed
-    one is stored beside it and never headlined."""
-    model = ConstantLogitsLM(make_pref())
-    exam_dir = _write_length_bias_exam_dir(tmp_path)
-    detailed = evaluate_all_detailed(model, exam_dir, range(N_PHASES), tokenizer=TOK, cfg=CFG)
+def test_pmi_cancels_a_context_free_model():
+    """A model that ignores context scores every option's PMI exactly 0: a
+    four-way tie, which counts as wrong, whatever its register prefers."""
+    item = dict(PMI_ITEM, option_sources=fake_sources(0, 1, 4, 1))
+    acc_pmi, acc_sum, _, _ = score_continuation_phase(ConstantLogitsLM(make_pref()), [item], TOK, CFG, DEV)
+    assert acc_pmi == 0.0
+    assert acc_sum == 0.0  # summed picks "xx" (index 0), not the answer
+
+
+def test_pmi_needs_an_eot_token():
+    class NoEot:
+        def encode(self, text):
+            return list(text.encode("utf-8"))
+
+    item = dict(PMI_ITEM, option_sources=fake_sources(0, 1, 4, 1))
+    with pytest.raises(ValueError, match="eot_id"):
+        score_continuation_phase(RegisterLM(), [item], NoEot(), CFG, DEV)
+
+
+def test_continuation_headline_in_evaluate_all_is_the_pmi_score(tmp_path):
+    """evaluate_all()["continuation"] is the PMI accuracy; the summed one is
+    stored beside it and never headlined."""
+    exam_dir = _write_pmi_exam_dir(tmp_path)
+    detailed = evaluate_all_detailed(RegisterLM(), exam_dir, range(N_PHASES), tokenizer=TOK, cfg=CFG)
     assert detailed.scores["continuation"][0] == 1.0
     assert detailed.continuation_summed[0] == 0.0
-    hook = evaluate_all(model, exam_dir, range(N_PHASES), tokenizer=TOK, cfg=CFG)
+    hook = evaluate_all(RegisterLM(), exam_dir, range(N_PHASES), tokenizer=TOK, cfg=CFG)
     assert hook["continuation"][0] == detailed.scores["continuation"][0]
     assert set(hook) == set(EXAM_TYPES)  # the summed score is not a fourth key
 
@@ -681,8 +731,8 @@ def write_synthetic_exam_dir(
     )
 
 
-def _write_length_bias_exam_dir(tmp_path: Path) -> Path:
-    """The hand-worked length-bias item in phase 0, filler elsewhere."""
+def _write_pmi_exam_dir(tmp_path: Path) -> Path:
+    """The hand-worked PMI item (`PMI_ITEM`) in phase 0, filler elsewhere."""
     root = write_synthetic_exam_dir(tmp_path / "exams")
     # option_sources must name real exam stories (audit 2026-09-25), so borrow
     # the provenance of the builder's own first phase-0 item.
@@ -690,9 +740,9 @@ def _write_length_bias_exam_dir(tmp_path: Path) -> Path:
     sources = load_jsonl(path)[0]["option_sources"]
     _write_jsonl(
         path,
-        [{"id": "k1", "phase": 0, "prefix": "q", "options": ["xxxx", "y", "yy", "zz"],
-          "answer_index": 0, "distractor_phases": [s["phase"] for s in sources[1:]],
-          "option_sources": sources}],
+        # PMI_ITEM's answer is option 1: move the borrowed answer source there.
+        [dict(PMI_ITEM, distractor_phases=[s["phase"] for s in sources[1:]],
+              option_sources=[sources[1], sources[0], *sources[2:]])],
     )
     return root
 
@@ -823,15 +873,14 @@ def test_a_missing_tokenizer_on_a_real_model_raises_rather_than_scoring_bytes(tm
 def test_the_matrix_row_carries_the_stored_summed_key(tmp_path):
     """matrix.json's fourth key: stored beside the three exam types, never
     headlined, and not a member of EXAM_TYPES."""
-    model = ConstantLogitsLM(make_pref())
-    exam_dir = _write_length_bias_exam_dir(tmp_path)
-    detailed = evaluate_all_detailed(model, exam_dir, range(N_PHASES), tokenizer=TOK, cfg=CFG)
+    exam_dir = _write_pmi_exam_dir(tmp_path)
+    detailed = evaluate_all_detailed(RegisterLM(), exam_dir, range(N_PHASES), tokenizer=TOK, cfg=CFG)
     row = detailed.as_matrix_row()
     assert list(row) == list(STORED_MATRIX_KEYS)
     assert CONTINUATION_SUMMED not in EXAM_TYPES
     assert len(row[CONTINUATION_SUMMED]) == N_PHASES
-    assert row[CONTINUATION_SUMMED][0] == 0.0  # the length-bias item, summed
-    assert row["continuation"][0] == 1.0  # ... and normalised, which is the headline
+    assert row[CONTINUATION_SUMMED][0] == 0.0  # the PMI item, summed
+    assert row["continuation"][0] == 1.0  # ... and by PMI, which is the headline
 
 
 def test_bad_phase_index_is_refused(tmp_path):

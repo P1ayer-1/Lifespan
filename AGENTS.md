@@ -91,7 +91,8 @@ EXAM_TYPES = ("perplexity", "cloze", "continuation")
 #   different verdicts the result is reported as split and neither is dropped.
 #   "perplexity" is the continuous forgetting curve and is never a verdict
 #   metric (a 15% change in a loss does not mean what H1's threshold means).
-# [frozen 2026-09-21] continuation is scored length-normalised (mean per-token
+# [frozen 2026-09-21; replaced by Amendment 4, 2026-10-01: PMI]
+# continuation is scored length-normalised (mean per-token
 #   log-likelihood of the option given the prefix); the summed score is computed
 #   and stored too, headlined never. Ties count as wrong.
 
@@ -346,6 +347,27 @@ evaluate_all_detailed(... same ...) -> EvalResult
 #   possible -- 2+1 for two, 3 for one -- from different stories where
 #   possible. So distractor_phases may repeat a phase; verify_probes and the
 #   evaluator already allow that.
+```
+
+### Amendment 4 — owner, 2026-10-01: continuation is scored by PMI
+
+The pre-pilot showed the length-normalised headline measures register, not
+retention (`docs/DECISIONS.md`, 2026-10-01): distractors are other phases'
+paragraphs, so a weak model picks whichever option sounds like the phase it
+last trained on, prefix or no prefix. Arm A scored 0.885 on phase 0 and
+0.010 / 0.000 on phases 3 / 6 after 29 steps of phase 0. The exams are not
+changed; the scoring is.
+
+```text
+# [replaces the 2026-09-21 length-normalised clause] continuation's headline is
+#   PMI: for each option, summed log p(option | prefix) minus summed
+#   log p(same option tokens | <|endoftext|>), the token every training story
+#   starts after. The highest PMI is the model's answer; ties count as wrong.
+#   The raw summed score is still computed and stored as continuation_summed,
+#   headlined never. matrix.json's keys, the hook's signature, EXAM_TYPES, the
+#   probe files and the manifest are unchanged. A matrix scored before this
+#   amendment is not comparable on "continuation" and is never pooled with one
+#   scored after it.
 ```
 
 ## Waves

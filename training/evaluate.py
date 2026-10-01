@@ -17,13 +17,19 @@ Scoring definitions, fixed here and not changed after a matrix comes back:
   text (positions 1..n-1; the first token has no context and is not scored).
   Not the candidate span alone, and never the first sub-token alone. Rank-1
   accuracy over the 20 candidates; a tie for the maximum counts as wrong.
-* **continuation** - each option is scored by the log-likelihood of the
-  option's tokens given the prefix. The headline score is
-  **length-normalised**: the mean per-token log-likelihood of the option. The
-  summed score is computed and stored beside it (`evaluate_all_detailed`) and
-  is never headlined. A tie for the maximum counts as wrong. Every item's
-  provenance is asserted first (`validate_continuation_item`) and the chance
-  level is derived from `len(options)`, never assumed to be 1/4.
+* **continuation** - the headline score is **PMI** (owner, 2026-10-01): an
+  option's summed log-likelihood given the prefix minus the summed
+  log-likelihood of *the same option tokens* given only `<|endoftext|>` (the
+  token that opens every story in training). The distractors are other
+  phases' paragraphs, so a raw likelihood mostly asks which phase's register
+  the model prefers; subtracting the option's context-free likelihood cancels
+  that and leaves what the prefix adds. The pre-pilot's arm A scored 0.885 /
+  0.010 / 0.000 on phases 0 / 3 / 6 after phase 0 alone under the old
+  length-normalised headline (docs/DECISIONS.md, 2026-10-01). The raw summed
+  score is computed and stored beside it (`continuation_summed`) and is never
+  headlined. A tie for the maximum counts as wrong. Every item's provenance is
+  asserted first (`validate_continuation_item`) and the chance level is
+  derived from `len(options)`, never assumed to be 1/4.
 
 Perplexity windowing rule (one fixed rule, stated in `EvalConfig` so it lands
 in config.json verbatim): each exam story is tokenised on its own, then cut
@@ -112,6 +118,8 @@ class ByteTokenizer:
     """
 
     vocab_size = 256
+    #: As training.tokenizer's byte tokenizer: NUL never occurs in text.
+    eot_id = 0
 
     def encode(self, text: str) -> list[int]:
         return list(text.encode("utf-8"))
@@ -177,7 +185,10 @@ class EvalConfig:
         "tokens over the phase"
     )
     cloze_scoring_rule: str = "whole filled sequence"
-    continuation_headline: str = "length-normalised (mean per-token log-likelihood)"
+    continuation_headline: str = (
+        "PMI: summed log p(option | prefix) - summed log p(option | <|endoftext|>), "
+        "over the same option tokens"
+    )
 
 
 @dataclass
@@ -649,15 +660,15 @@ def score_continuation_phase(
     device: torch.device,
     known_story_hashes: Any = None,
 ) -> tuple[float, float, int, float | None]:
-    """Returns (normalised accuracy, summed accuracy, n_items, chance).
+    """Returns (PMI accuracy, summed accuracy, n_items, chance).
 
     `known_story_hashes` is passed to `validate_continuation_item` for every
     item (a set of exam story hashes, or a mapping hash -> phase).
 
-    The headline is the length-normalised accuracy - the mean per-token
-    log-likelihood of the option given the prefix. The summed accuracy is
-    computed and stored beside it and is never headlined. Ties count as wrong
-    under both.
+    The headline is the PMI accuracy: each option's summed log-likelihood given
+    the prefix minus that of the identical option tokens given only the
+    tokenizer's `eot_id`. The raw summed accuracy is computed and stored beside
+    it and is never headlined. Ties count as wrong under both.
 
     Every item is validated first (`validate_continuation_item`). `chance` is
     derived as 1 / len(options), never assumed to be 1/4, and a phase whose
@@ -675,7 +686,13 @@ def score_continuation_phase(
                 + " options but this phase's earlier items have " + str(n_options)
                 + "; one chance level per phase or the accuracies are not comparable"
             )
+    eot = getattr(tokenizer, "eot_id", None)
+    if eot is None:
+        raise ValueError(
+            "continuation is scored by PMI against <|endoftext|>, and this tokenizer has no eot_id"
+        )
     flat: list[_Scored] = []
+    bare: list[_Scored] = []
     bounds: list[tuple[int, int]] = []
     answer_at: list[int] = []
     for row in items:
@@ -691,20 +708,25 @@ def score_continuation_phase(
                 full = full + [0]
             span_start = max(1, min(len(prefix_ids), len(full) - 1))
             flat.append(_truncate_left(full, span_start, len(full), cfg.block_size))
+            # The context-free baseline scores exactly these option tokens, so
+            # the difference is per token-for-token, not per re-tokenisation.
+            alone = [eot, *full[span_start:]]
+            bare.append(_truncate_left(alone, 1, len(alone), cfg.block_size))
         bounds.append((start, len(flat)))
         answer_at.append(int(row["answer_index"]))
     scored = _score_spans(model, flat, cfg, device)
-    correct_norm = 0
+    baseline = _score_spans(model, bare, cfg, device)
+    correct_pmi = 0
     correct_sum = 0
     for (lo, hi), gold in zip(bounds, answer_at):
         sums = [scored[i][0] for i in range(lo, hi)]
-        norms = [scored[i][0] / max(1, scored[i][1]) for i in range(lo, hi)]
-        if _argmax_unique(norms) == gold:
-            correct_norm += 1
+        pmis = [scored[i][0] - baseline[i][0] for i in range(lo, hi)]
+        if _argmax_unique(pmis) == gold:
+            correct_pmi += 1
         if _argmax_unique(sums) == gold:
             correct_sum += 1
     n = len(items)
-    return correct_norm / n, correct_sum / n, n, 1.0 / n_options
+    return correct_pmi / n, correct_sum / n, n, 1.0 / n_options
 
 
 def _argmax_unique(values: Sequence[float]) -> int:
@@ -787,10 +809,10 @@ def evaluate_all_detailed(
             chance["cloze"][phase] = ch
 
             cont_items = load_jsonl(_probes_path(exam_dir, phase, "continuation"))
-            acc_n, acc_s, n, ch2 = score_continuation_phase(
+            acc_pmi, acc_s, n, ch2 = score_continuation_phase(
                 model, cont_items, tok, cfg, device, known_story_hashes=story_hashes
             )
-            scores["continuation"][phase] = acc_n
+            scores["continuation"][phase] = acc_pmi
             summed[phase] = acc_s
             n_items["continuation"][phase] = n
             chance["continuation"][phase] = ch2

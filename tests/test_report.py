@@ -332,6 +332,34 @@ def test_a_run_with_different_hashes_is_excluded_from_its_comparison(tmp_path):
     assert "hashes differ" in refused[0].reason
 
 
+def _hashes(fingerprint: str, scoring: str = "s" * 64) -> dict:
+    return {"hashes": {**HASHES["hashes"], "scoring": scoring, "fingerprint": fingerprint}}
+
+
+def test_the_per_run_fingerprint_does_not_split_a_comparison(tmp_path):
+    """train.py writes the checkpoint fingerprint's digest (seed and commit
+    included) into `hashes`; it differs between every two runs and must not
+    count (2026-10-01: it would have kept one run per comparison)."""
+    for seed in (0, 1, 2):
+        write_run(tmp_path, "A", seed, final_acc=0.5, forgetting=0.2, hashes=_hashes(str(seed) * 64))
+    runs, _ = report.discover_runs(tmp_path)
+    kept, refused = report.filter_consistent(runs)
+    assert len(kept) == 3 and refused == []
+
+
+def test_runs_scored_under_another_rule_are_refused(tmp_path):
+    """AGENTS.md, Amendment 4: a matrix scored before the PMI change is never
+    pooled with one scored after it."""
+    for seed in (0, 1, 2):
+        write_run(tmp_path, "A", seed, final_acc=0.5, forgetting=0.2, hashes=_hashes(str(seed) * 64))
+    write_run(tmp_path, "A", 3, final_acc=0.5, forgetting=0.2,
+              hashes=_hashes("3" * 64, scoring="o" * 64))
+    runs, _ = report.discover_runs(tmp_path)
+    kept, refused = report.filter_consistent(runs)
+    assert [r.seed for r in kept] == [0, 1, 2]
+    assert len(refused) == 1 and refused[0].run_id.startswith("A_s3")
+
+
 GOOD_COMMIT = (
     "commit: " + "a" * 40 + "\ndirty: false\ntorch: 2.14.0\ncuda: 12.4\ndriver: 550.54\n"
 )

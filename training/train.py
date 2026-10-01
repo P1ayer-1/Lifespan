@@ -590,8 +590,12 @@ def run(
             "data": guard_report.data_hash,
             "config": fingerprint.train_config_hash,
             "tokenizer": fingerprint.tokenizer_sha256,
+            #: How the exams are scored (AGENTS.md, Amendment 4): runs scored
+            #: under different rules are never compared.
+            "scoring": _scoring_digest(make_eval_config(settings.model_cfg)),
             "fingerprint": fingerprint.digest(),
         },
+        "evaluation": _scoring_rules(make_eval_config(settings.model_cfg)),
         "fingerprint": asdict(fingerprint),
         "shared_dir": str(shared_dir),
         "env": env,
@@ -854,6 +858,28 @@ def _tokenizer_digest(tokenizer) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _scoring_rules(eval_cfg) -> dict | None:
+    """The evaluator's scoring rules, for config.json. Memory knobs (batch
+    size, logit chunk, device) are left out: they do not move a score."""
+    if eval_cfg is None:
+        return None
+    return {
+        "block_size": eval_cfg.block_size,
+        "perplexity_window_rule": eval_cfg.perplexity_window_rule,
+        "cloze_scoring_rule": eval_cfg.cloze_scoring_rule,
+        "continuation_headline": eval_cfg.continuation_headline,
+    }
+
+
+def _scoring_digest(eval_cfg) -> str | None:
+    import hashlib
+
+    rules = _scoring_rules(eval_cfg)
+    if rules is None:
+        return None
+    return hashlib.sha256(json.dumps(rules, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _config_digest(tcfg: TrainConfig, settings: "Settings") -> str:

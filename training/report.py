@@ -243,6 +243,13 @@ def _run_id_parts(run_id: str) -> tuple[str | None, int | None]:
     return None, None
 
 
+#: Keys of config.json's `hashes` block that identify one run rather than what
+#: runs share: the checkpoint fingerprint's digest includes the seed and the
+#: commit, so it differs between every two runs and would leave one run per
+#: comparison (found 2026-10-01; the tests' hand-written hashes lacked it).
+PER_RUN_HASH_KEYS = frozenset({"fingerprint"})
+
+
 def _collect_hashes(config: Mapping) -> dict[str, str]:
     """config.json's one top-level `hashes` block, flattened.
 
@@ -256,6 +263,8 @@ def _collect_hashes(config: Mapping) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     for key, value in sorted(block.items()):
+        if key in PER_RUN_HASH_KEYS:
+            continue
         if isinstance(value, Mapping):
             for k2, v2 in sorted(value.items()):
                 out[str(key) + "." + str(k2)] = str(v2)

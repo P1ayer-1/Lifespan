@@ -879,3 +879,43 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
   refuses a fresh run over a folder holding state.pt, and the launch cell
   asserts the run folder matches ARM/SEED. Arm E's result is not in the
   dataset.
+
+## 2026-10-01 — continuation headline changed to PMI (owner); report hash bug
+
+- **Decided (owner):** keep the exams, change the scoring. Continuation's
+  headline is now summed PMI: log p(option | prefix) - log p(the same option
+  tokens | <|endoftext|>). AGENTS.md Amendment 4; tests/test_evaluate.py has a
+  hand-worked case where the raw sum picks the model's register and PMI picks
+  the option the prefix supports.
+- **Measured before freezing it**, arm A's pre-pilot checkpoints re-scored on
+  CPU against the frozen 0/3/6 exam (accuracy, chance 0.25; n 96/100/100):
+
+  | model / exam | raw sum | old length-norm | PMI sum | PMI per-token |
+  | --- | --- | --- | --- | --- |
+  | after p0 / p0 | 0.250 | 0.885 | 0.167 | 0.167 |
+  | after p0 / p3 | 0.040 | 0.010 | 0.240 | 0.220 |
+  | after p0 / p6 | 0.060 | 0.000 | 0.290 | 0.280 |
+  | after p6 / p0 | 0.146 | 0.104 | 0.146 | 0.135 |
+  | after p6 / p3 | 0.070 | 0.260 | 0.270 | 0.180 |
+  | after p6 / p6 | 0.190 | 0.450 | 0.420 | 0.340 |
+
+  Rate of picking the longest option (the answer is longest 0.16-0.31):
+  raw sum 0.00, old length-norm 0.13-0.24, PMI sum 0.20-0.23, PMI per-token
+  0.07-0.18. PMI sum removes the far-below-chance register artefact, has no
+  length bias, and keeps the one real signal (after p6 / p6, 0.42, ~4 sd
+  above chance); per-token PMI is short-biased and weaker, so it is not used.
+- **Open:** phase-0 PMI sits ~2 sd below chance (16/96, 14/96), not from
+  length. A candidate is the baseline context: every option is a mid-story
+  paragraph but <|endoftext|> means "a story starts here". At pilot scale
+  the model barely uses the prefix at all (after p0 / p0 is at chance), so
+  continuation is near chance except where training was longest; cloze and
+  loss carry the pilot's signal. Revisit on the re-run's numbers.
+- **Found on the way:** report.filter_consistent compared every key of
+  config.json's `hashes`, including the checkpoint fingerprint's digest,
+  which contains the seed and commit, so any real grid would have kept one
+  run per comparison and refused the rest. The fingerprint key is now
+  skipped (test fails without the fix); the scoring rules go into
+  config.json ("evaluation") and their digest into `hashes.scoring`, so runs
+  scored under different rules are refused rather than pooled.
+- **Next:** re-run phase0, A and E at the new commit (the commit is in the
+  shared-checkpoint fingerprint, and E's result was never pushed).
