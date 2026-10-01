@@ -1,0 +1,67 @@
+{
+ "experiment_id": "lifespan-grid036",
+ "files": {
+  "replay/phase_0.json": {
+   "n": 500,
+   "sha256": "a862339c42032c69b56b59ba69955d27f07a7cbf2062c4b7300a94583eb2c395"
+  },
+  "replay/phase_3.json": {
+   "n": 500,
+   "sha256": "3c07598a6d9350d0a1fae74046e05f8b4ab02a08ea9b11c873384cd7e6c03bd9"
+  },
+  "replay/phase_6.json": {
+   "n": 500,
+   "sha256": "085089ed46b4e32bad1bffe4b728f2f2a8e40a0413905f19ffdb439d0bc366f8"
+  },
+  "train_phase_0.jsonl": {
+   "lines": 4961,
+   "sha256": "00109ec1531dbf5050eee0cec45435b34405778370deb0997862d2280ff3b879"
+  },
+  "train_phase_3.jsonl": {
+   "lines": 4373,
+   "sha256": "c06125c2f0a7d23f871b36757576b93a33bf132bc34b403f1f506d63886fffdd"
+  },
+  "train_phase_6.jsonl": {
+   "lines": 4364,
+   "sha256": "5d9629a69e5842b8413e7fea608f6252918f04ae91f6e585ec45ffc4328a0cc6"
+  }
+ },
+ "generator_model": "z-ai/glm-5.3@openrouter/Baidu/fp8/reasoning=low",
+ "phases": {
+  "0": {
+   "age": 24,
+   "age_reviewed": 500,
+   "dropped": 39,
+   "fact_adds_false_claim": 17,
+   "fact_fact_missing": 1,
+   "fact_reviewed": 500,
+   "kept": 4961,
+   "mechanical": 1,
+   "source": 5000
+  },
+  "3": {
+   "age": 32,
+   "age_reviewed": 500,
+   "dropped": 624,
+   "fact_adds_false_claim": 544,
+   "fact_contradicts_fact": 18,
+   "fact_fact_missing": 37,
+   "fact_reviewed": 4997,
+   "kept": 4373,
+   "mechanical": 8,
+   "source": 4997
+  },
+  "6": {
+   "age": 17,
+   "age_reviewed": 500,
+   "dropped": 636,
+   "fact_adds_false_claim": 594,
+   "fact_contradicts_fact": 13,
+   "fact_reviewed": 5000,
+   "kept": 4364,
+   "mechanical": 17,
+   "source": 5000
+  }
+ },
+ "replay_selection": "random.Random(int(sha256('lifespan-grid036|replay|phase{k}|4243')[:8 bytes])).sample(sorted kept prompt_hashes, 500), then sorted"
+}
