@@ -1033,3 +1033,44 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
 - **Guard:** `training.guard` passes against the frozen exam (manifest sha
   25cee546…, experiment_id lifespan-grid036): 13,701 lines vs 1,500 exam
   stories, data_hash 37861c52b23f.
+
+## 2026-10-02 — grid036 result: arm B memorised its replay buffer; arms C/D could not learn new phases (owner)
+
+- **Measured (grid036, 21 valid runs, 2× RTX 5090, about 1.7 GPU-hours, ~$1):**
+  continuation forgetting was 0 for nearly every arm, so the headline exam
+  could not separate them. On cloze and exam loss (seed 0):
+  - arm A (no replay) kept phase 0 well: phase-0 cloze 0.58 → 0.54; exam loss 4.21 → 4.48.
+  - arm B (replay) did worse than A: phase-0 cloze 0.58 → 0.35 → 0.28.
+  - arms C, D and D-nr barely learned new phases: phase-6 exam loss about 5.5,
+    against arm A's 3.9.
+  - H2b: D took 1.26× B's GPU time.
+- **Arm B diagnosis:** the 500-story buffer packs to 121 phase-0 sequences.
+  B replayed 4,816 sequences in phase 3, about 40 per sequence. Final arm-B
+  loss was 1.15 on the replayed sequences and 5.0 on other phase-0 training
+  stories and on the phase-0 exam. Arm A, with no replay, was about 4.5 on all
+  three. The replay code is correct; the buffer is too small.
+- **Arms C/D diagnosis** (laptop RTX 3080 probes, seed-0 phase-0 checkpoint,
+  grid-faithful phase 3: 344 steps × 32 × 1024 tokens, warmup 200, cosine).
+  Phase-3 exam loss / phase-0 exam loss:
+  - start (phase-0 checkpoint): 6.29 / 4.23
+  - full fine-tuning, lr 3e-4: 4.59 / 4.55 (the grid's arm A: 4.60)
+  - LoRA rank 16, lr 3e-4: 5.65 / 4.67 (the grid's arm C: 5.66)
+  - LoRA rank 16, lr 1e-3: 5.59 / 4.65; lr 3e-3: 5.81 / 4.89
+  - LoRA rank 64: 5.52 / 4.64
+  - full fine-tuning with embeddings frozen: 5.34 / 4.60
+  - LoRA rank 16 + low-rank embedding adapter, rank 16: 5.56 / 4.71; rank 64: 5.27 / 4.80
+  - **LoRA rank 16 + trainable embeddings: 4.80 / 4.66**
+
+  The bottleneck is the frozen embeddings, not rank or learning rate. LoRA did
+  not protect phase 0 better than full fine-tuning in any configuration.
+- **Decided (owner):**
+  - AGENTS.md Amendment 7: replay draws from all earlier-phase training data.
+    Built as `D:\Lifespan\grid036_train_v2`, with training files byte-identical
+    to v1; guard ok, data_hash cb2217bbcba5.
+  - AGENTS.md Amendment 6: the adapter phase (step 1) also trains the
+    embeddings, `TrainConfig.lora_train_embeddings = True`. The cost: about 17%
+    of the model is trainable in step 1, against about 6% with LoRA alone.
+  - Re-run the grid with the same exams and experiment id. Its results are not
+    pooled with the first grid's.
+- **Kept, not re-run:** the first grid's results, in
+  `D:\Lifespan\grid036_out` (report under `report/`).

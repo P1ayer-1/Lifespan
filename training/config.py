@@ -146,6 +146,10 @@ class TrainConfig:
     #: LoRA, arms C and D (PLAN.md, Model and compute).
     lora_rank: int = 16
     lora_alpha: int = 32
+    #: Step 1 also trains the token/position embeddings (and the tied head).
+    #: Amendment 6 (docs/DECISIONS.md 2026-10-02): frozen embeddings left arms
+    #: C/D unable to learn a new phase (phase-3 exam loss 5.65 vs arm A 4.59).
+    lora_train_embeddings: bool = True
     #: The consolidation loss (PLAN.md, The consolidation step).
     distill_lambda: float = 1.0
     #: Sizes, full grid.

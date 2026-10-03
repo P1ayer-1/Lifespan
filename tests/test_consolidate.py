@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import math
+from dataclasses import replace
 
 import pytest
 import torch
@@ -80,14 +81,18 @@ def test_kl_is_computed_in_float32_under_half_precision():
 # ---------------------------------------------------------------------------
 
 
-def test_step1_trains_only_the_lora(toy_cfg: TrainConfig):
-    """Acceptance 3: the trainable set is exactly the adapters, and the base
-    weights are numerically unchanged after a few steps."""
+@pytest.mark.parametrize("train_embeddings", [False, True])
+def test_step1_trains_only_the_lora(toy_cfg: TrainConfig, train_embeddings: bool):
+    """Acceptance 3: the trainable set is exactly the adapter set, and every
+    other base weight is numerically unchanged after a few steps. With
+    `lora_train_embeddings` (Amendment 6) the embeddings move too, and only
+    they."""
+    cfg = replace(toy_cfg, lora_train_embeddings=train_embeddings)
     model = make_model(seed=0)
     before = {n: p.detach().clone() for n, p in model.named_parameters()}
     rec = RecordingContext(arm="C", phase=1, replay_fraction=0.0, steps=4)
 
-    out = consolidate.train_phase_lora(model, 1, rec.ctx, toy_cfg)
+    out = consolidate.train_phase_lora(model, 1, rec.ctx, cfg)
 
     assert rec.logs and "step 1" in rec.logs[0]
     trainable = [n for n, p in out.named_parameters() if p.requires_grad]
@@ -102,24 +107,37 @@ def test_step1_trains_only_the_lora(toy_cfg: TrainConfig):
         if new is None:
             stem, leaf = name.rsplit(".", 1)
             new = named[f"{stem}.base.{leaf}"]
-        assert torch.equal(new, old), f"base weight moved during step 1: {name}"
+        if name in lora.EMBEDDING_SUFFIXES and train_embeddings:
+            assert not torch.equal(new, old), f"embedding did not train: {name}"
+        else:
+            assert torch.equal(new, old), f"base weight moved during step 1: {name}"
 
 
-def test_step1_asserts_the_invariant_rather_than_assuming_it(toy_cfg, monkeypatch):
+@pytest.mark.parametrize(
+    "train_embeddings,leak",
+    [
+        # embeddings frozen: a stray trainable embedding must be caught
+        (False, lambda m: m.wte.weight.requires_grad_(True)),
+        # embeddings trained: a stray trainable projection must still be caught
+        (True, lambda m: m.blocks[0].attn.c_attn.base.weight.requires_grad_(True)),
+    ],
+)
+def test_step1_asserts_the_invariant_rather_than_assuming_it(
+    toy_cfg, monkeypatch, train_embeddings, leak
+):
+    cfg = replace(toy_cfg, lora_train_embeddings=train_embeddings)
     model = make_model(seed=0)
     rec = RecordingContext(arm="C", phase=1, replay_fraction=0.0, steps=1)
     real = lora.apply_lora
 
     def leaky(m, **kw):
         out = real(m, **kw)
-        # A stray trainable base parameter. The embedding, not a norm: every
-        # model has one, so the test does not depend on LayerNorm being affine.
-        m.wte.weight.requires_grad_(True)
+        leak(m)  # a stray trainable base parameter
         return out
 
     monkeypatch.setattr(consolidate, "apply_lora", leaky)
     with pytest.raises(AssertionError, match="only LoRA parameters"):
-        consolidate.train_phase_lora(model, 1, rec.ctx, toy_cfg)
+        consolidate.train_phase_lora(model, 1, rec.ctx, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -392,8 +410,12 @@ def test_after_phase_smoke(arm: str, frac: float, toy_cfg):
     moved = [n for n, p in after.items() if not torch.equal(p, before[n])]
     assert moved, f"arm {arm}: nothing changed"
     if arm == "C":
-        # the merge writes into the adapted projections and nothing else
-        assert all(".attn.c_" in n or ".mlp.c_" in n for n in moved), moved
+        # the merge writes into the adapted projections, plus the embeddings
+        # step 1 trained (Amendment 6), and nothing else
+        allowed = lambda n: ".attn.c_" in n or ".mlp.c_" in n or (  # noqa: E731
+            toy_cfg.lora_train_embeddings and n in lora.EMBEDDING_SUFFIXES
+        )
+        assert all(allowed(n) for n in moved), moved
     # still runnable
     out.eval()
     with torch.no_grad():

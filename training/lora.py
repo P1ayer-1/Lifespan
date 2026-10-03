@@ -151,19 +151,40 @@ def _get_parent(model: nn.Module, dotted: str) -> tuple[nn.Module, str]:
     return parent, parts[-1]
 
 
+#: Parameter-name suffixes of the token and position embeddings (the LM head is
+#: tied to `wte`, so it moves with it). Trained in step 1 when
+#: `train_embeddings=True` (docs/DECISIONS.md 2026-10-02: with them frozen, a
+#: rank-16 or rank-64 adapter learns a new phase's vocabulary barely at all).
+EMBEDDING_SUFFIXES: tuple[str, ...] = ("wte.weight", "wpe.weight")
+
+#: Attribute holding step 1's starting embeddings, so a discard can restore
+#: B_k exactly. Deliberately not a buffer: it never reaches a state_dict.
+_SNAPSHOT_ATTR = "_lora_embedding_snapshot"
+
+
+def embedding_parameter_names(model: nn.Module) -> list[str]:
+    return [
+        n for n, _ in model.named_parameters()
+        if any(n == s or n.endswith("." + s) for s in EMBEDDING_SUFFIXES)
+    ]
+
+
 def apply_lora(
     model: nn.Module,
     rank: int,
     alpha: int,
     seed: int,
     suffixes: tuple[str, ...] = TARGET_SUFFIXES,
+    train_embeddings: bool = False,
 ) -> nn.Module:
     """Attach adapters in place, freeze everything else, return the model.
 
-    After this call *only* LoRA parameters have `requires_grad` (asserted by
-    `assert_only_lora_trainable`). Raises if no module matched: a LoRA that
-    adapts nothing trains nothing and would silently turn arm C and arm D into
-    arm A with a wasted forward pass.
+    After this call *only* the adapter set has `requires_grad` (asserted by
+    `assert_only_lora_trainable`): the LoRA parameters, plus the embeddings when
+    `train_embeddings` is set. In that case the embeddings' starting values are
+    snapshotted so `strip_lora(merge=False)` can put B_k back exactly. Raises if
+    no module matched: a LoRA that adapts nothing trains nothing and would
+    silently turn arm C and arm D into arm A with a wasted forward pass.
     """
     targets = find_target_modules(model, suffixes)
     if not targets:
@@ -180,6 +201,14 @@ def apply_lora(
         parent, attr = _get_parent(model, name)
         base = getattr(parent, attr)
         setattr(parent, attr, LoRALinear(base, rank=rank, alpha=alpha, generator=generator))
+    if train_embeddings:
+        names = embedding_parameter_names(model)
+        if not names:
+            raise ValueError(f"train_embeddings=True but no parameter ends with {EMBEDDING_SUFFIXES}")
+        params = dict(model.named_parameters())
+        setattr(model, _SNAPSHOT_ATTR, {n: params[n].detach().clone() for n in names})
+        for n in names:
+            params[n].requires_grad_(True)
     return model
 
 
@@ -201,10 +230,26 @@ def has_lora(model: nn.Module) -> bool:
     return any(True for _ in lora_modules(model))
 
 
+def adapter_parameter_names(model: nn.Module) -> list[str]:
+    """Step 1's trainable set: the LoRA parameters, plus the embeddings when
+    `apply_lora(..., train_embeddings=True)` snapshotted them."""
+    names = lora_parameter_names(model)
+    if getattr(model, _SNAPSHOT_ATTR, None):
+        names += embedding_parameter_names(model)
+    return names
+
+
+def adapter_parameters(model: nn.Module) -> list[nn.Parameter]:
+    params = dict(model.named_parameters())
+    return [params[n] for n in adapter_parameter_names(model)]
+
+
 def assert_only_lora_trainable(model: nn.Module) -> list[str]:
-    """Invariant for step 1: the trainable set is exactly the adapters."""
+    """Invariant for step 1: the trainable set is exactly the adapter set."""
     trainable = {n for n, p in model.named_parameters() if p.requires_grad}
-    expected = set(lora_parameter_names(model))
+    if not lora_parameter_names(model):
+        raise AssertionError("no LoRA parameters found; apply_lora was not called")
+    expected = set(adapter_parameter_names(model))
     if not expected:
         raise AssertionError("no LoRA parameters found; apply_lora was not called")
     if trainable != expected:
@@ -226,7 +271,8 @@ def strip_lora(model: nn.Module, merge: bool) -> nn.Module:
     leaves the base exactly as it was -- arm D's step 3 starts from B_k.
 
     Either way no LoRA parameter survives, so nothing reaches the optimizer or
-    the checkpoint ("discard means gone").
+    the checkpoint ("discard means gone"). Embeddings trained in step 1 follow
+    the same rule: kept on a merge, restored to their snapshot on a discard.
     """
     for name, module in list(lora_modules(model)):
         base = module.base
@@ -234,6 +280,13 @@ def strip_lora(model: nn.Module, merge: bool) -> nn.Module:
             base.weight.add_(module.merged_delta().to(base.weight.dtype))
         parent, attr = _get_parent(model, name)
         setattr(parent, attr, base)
+    snapshot = getattr(model, _SNAPSHOT_ATTR, None)
+    if snapshot is not None:
+        if not merge:
+            params = dict(model.named_parameters())
+            for n, value in snapshot.items():
+                params[n].copy_(value.to(params[n].device, params[n].dtype))
+        delattr(model, _SNAPSHOT_ATTR)
     return model
 
 

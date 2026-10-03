@@ -157,6 +157,52 @@ def test_strip_without_merge_restores_the_base_exactly():
         assert torch.equal(p, before[n]), n
 
 
+def _train_embeddings_a_little(model):
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if n in lora.EMBEDDING_SUFFIXES:
+                p.add_(0.01)
+
+
+def test_trained_embeddings_join_the_adapter_set():
+    """Amendment 6: with train_embeddings, step 1's trainable set is the LoRA
+    parameters plus the token and position embeddings, and nothing else."""
+    cfg = TrainConfig()
+    model = lora.apply_lora(make_model(), cfg.lora_rank, cfg.lora_alpha, seed=0, train_embeddings=True)
+    trainable = lora.assert_only_lora_trainable(model)
+    assert set(trainable) - set(lora.lora_parameter_names(model)) == set(lora.EMBEDDING_SUFFIXES)
+    # the snapshot is bookkeeping, never part of a checkpoint
+    assert not any("snapshot" in k for k in model.state_dict())
+
+
+def test_discard_restores_trained_embeddings_exactly():
+    """Arm D: the student starts from B_k, embeddings included."""
+    cfg = TrainConfig()
+    base = make_model(seed=0)
+    before = {n: p.detach().clone() for n, p in base.named_parameters()}
+    lora.apply_lora(base, cfg.lora_rank, cfg.lora_alpha, seed=0, train_embeddings=True)
+    _randomise_lora(base)
+    _train_embeddings_a_little(base)
+    lora.strip_lora(base, merge=False)
+    after = dict(base.named_parameters())
+    for n, p in after.items():
+        assert torch.equal(p, before[n]), n
+
+
+def test_merge_keeps_trained_embeddings():
+    """Arm C and arm D's teacher: what step 1 learned in the embeddings stays."""
+    cfg = TrainConfig()
+    base = make_model(seed=0)
+    before = {n: p.detach().clone() for n, p in base.named_parameters()}
+    lora.apply_lora(base, cfg.lora_rank, cfg.lora_alpha, seed=0, train_embeddings=True)
+    _train_embeddings_a_little(base)
+    lora.merge_lora(base)
+    after = dict(base.named_parameters())
+    for n in lora.EMBEDDING_SUFFIXES:
+        assert torch.allclose(after[n], before[n] + 0.01), n
+    assert not hasattr(base, "_lora_embedding_snapshot")
+
+
 def test_discard_means_gone():
     cfg = TrainConfig()
     model = lora.apply_lora(make_model(), cfg.lora_rank, cfg.lora_alpha, seed=0)

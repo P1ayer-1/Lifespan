@@ -395,6 +395,42 @@ registers, 0.917. Re-scored with same-phase distractors E fell to 0.312
 #   a new experiment id, never pooled with matrices from the old probes.
 ```
 
+### Amendment 6 — owner, 2026-10-02: step 1 also trains the embeddings
+
+With the token and position embeddings frozen, arms C and D could not learn a
+new phase: grid036 arm C reached phase-3 exam loss 5.66 where arm A reached
+4.60. Laptop probes from the seed-0 phase-0 checkpoint (`docs/DECISIONS.md`,
+2026-10-02) put the cause in the embeddings, not the rank or the lr.
+
+```text
+# [replaces "step 1: freeze B_k, train only L_k"] Step 1 trains L_k (rank 16,
+#   alpha 32, as before) AND the token/position embeddings (wte, wpe; the LM
+#   head is tied to wte). TrainConfig.lora_train_embeddings = True.
+#   apply_lora(..., train_embeddings=True) snapshots the embeddings; the
+#   trainable set asserted in step 1 is LoRA + {wte.weight, wpe.weight}.
+#   Arm C's merge keeps the trained embeddings. Arm D's teacher T = B_k + L_k
+#   keeps them; the student is restored to B_k exactly, embeddings included,
+#   before step 3. Every other weight of B_k stays frozen in step 1.
+```
+
+### Amendment 7 — owner, 2026-10-02: replay draws from all earlier-phase training data
+
+The 500-story buffer packed to 121 phase-0 sequences; arm B replayed each about
+40 times per phase and memorised them (loss 1.15 on the buffer, 5.0 on other
+phase-0 stories and on the exam, against arm A's 4.5 with no replay).
+
+```text
+# [replaces "Replay buffer: 500, sampled from training"] replay/phase_k.json
+#   lists every prompt_hash of train_phase_k.jsonl, so an arm with replay
+#   draws from all of every earlier phase's training data. The 30% fraction,
+#   the draw-with-replacement sampler and the replay generator are unchanged.
+#   Pure data change; no code reads the buffer size.
+```
+
+Amendments 6 and 7 leave the exams, the manifest and the experiment id
+(`lifespan-grid036`) unchanged. Runs before and after them are told apart by
+`hashes.config` and `hashes.data` in config.json and are never pooled.
+
 ## Waves
 
 Follow `PLAN.md`'s schedule; a wave is green when its gate is answered in

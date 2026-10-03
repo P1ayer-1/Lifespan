@@ -55,6 +55,7 @@ from .data import shift_for_lm
 from .hooks import PhaseContext
 from .model import cosine_lr
 from .lora import (
+    adapter_parameters,
     apply_lora,
     assert_only_lora_trainable,
     forward_logits,
@@ -205,17 +206,23 @@ def train_phase_lora(
     global `STEP1`, so they cannot drift apart.
     """
     n_new = ctx.sequences_per_batch
-    apply_lora(model, rank=cfg.lora_rank, alpha=cfg.lora_alpha, seed=ctx.seed)
+    apply_lora(
+        model,
+        rank=cfg.lora_rank,
+        alpha=cfg.lora_alpha,
+        seed=ctx.seed,
+        train_embeddings=cfg.lora_train_embeddings,
+    )
     trainable = assert_only_lora_trainable(model)  # invariant, not an assumption
     ctx.log(
         f"[consolidate] phase {phase_k} step 1: LoRA rank {cfg.lora_rank} "
-        f"alpha {cfg.lora_alpha}, {len(trainable)} trainable tensors, "
-        f"{ctx.steps} steps x {n_new} sequences"
+        f"alpha {cfg.lora_alpha}, embeddings {'trained' if cfg.lora_train_embeddings else 'frozen'}, "
+        f"{len(trainable)} trainable tensors, {ctx.steps} steps x {n_new} sequences"
     )
 
     model.to(ctx.device)
     model.train()
-    params = lora_parameters(model)
+    params = adapter_parameters(model)
     opt = _make_optimizer(model, params, cfg, ctx.lr, ctx.device.type)
     scaler = torch.amp.GradScaler(
         ctx.device.type, enabled=(ctx.amp_dtype == torch.float16 and ctx.device.type == "cuda")
