@@ -1074,3 +1074,38 @@ amendment 3). curriculum-learning's generator side: 767c6fd, d98ae34.
     pooled with the first grid's.
 - **Kept, not re-run:** the first grid's results, in
   `D:\Lifespan\grid036_out` (report under `report/`).
+
+## 2026-10-02 — grid036 re-run (Amendments 6 and 7): replay beats consolidation
+
+- **Run:** commit ec12222, `grid036_train_v2` (data_hash cb2217bbcba5), same
+  exams and experiment id. 2× RTX 5090; all 21 runs valid. Archive sha256
+  1b81e6e3…f4c8, kept with its report in `D:\Lifespan\grid036v2_out`.
+- **Measured** (mean of 3 seeds, after phase 6). Phase-0 / phase-3 / phase-6
+  exam loss; then phase-0 cloze after phase 3 / after phase 6; then mean cloze
+  over the three phases. The phase-0 checkpoint starts at phase-0 loss 4.21.
+  - A (no replay):     4.49 / 4.20 / 3.91; phase-0 cloze 0.54 / 0.55; mean 0.28
+  - B (replay):        3.15 / 3.96 / 3.88; phase-0 cloze 0.65 / 0.73; mean 0.34
+  - C (LoRA merge):    4.76 / 4.60 / 4.38; phase-0 cloze 0.53 / 0.49; mean 0.23
+  - D (consolidation): 4.19 / 4.78 / 4.38; phase-0 cloze 0.59 / 0.59; mean 0.28
+  - D-nr:              4.72 / 4.57 / 4.34; phase-0 cloze 0.54 / 0.51; mean 0.25
+  - E (joint):         3.23 / 4.04 / 4.01; phase-0 cloze 0.61 / 0.71; mean 0.34
+- **Hypotheses (report.txt):**
+  - H1 split: continuation killed (A lost 0%); cloze neither (A lost 5.4%).
+  - H2a neither: D and B forgetting are within seed spread on both exams. E − D
+    final cloze accuracy is 6.1 points, outside the 3-point margin.
+  - H2b: D took 1.30× B's GPU time.
+  - H3 neither: D − C = +4.2 cloze points, −3.9 continuation points.
+  - H4 split: killed on continuation, confirmed on cloze.
+- **Read:**
+  - Arm B (replay from all earlier-phase data) matches the joint arm E and
+    dominates arm D on retention, on new-phase learning and on compute.
+  - D holds phase 0 essentially unchanged but learns new phases worse than A.
+    The Amendment 6 fix lifted D's phase-6 loss from about 5.5 to 4.38, still
+    0.5 behind B.
+  - Forgetting without protection is mild at this scale (H1 not confirmed), so
+    the grid has little forgetting to prevent.
+  - Continuation is uninformative here: 0 forgetting in every arm, both grids.
+- **Caveats:**
+  - B stores and replays every old story; D's case rests on not needing that.
+    The comparison is not yet at an equal, small replay budget.
+  - The model is heavily undertrained (4 epochs of about 4.4k stories per phase).
